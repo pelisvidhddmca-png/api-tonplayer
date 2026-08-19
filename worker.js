@@ -124,14 +124,27 @@ async function router(request, env, ctx) {
     */
 
     if (pathname === "/health") {
+    return jsonResponse({
+        success: true,
+        status: "online",
+        event: "complete",
+        worker: "TON Scraper API",
 
-        return jsonResponse({
-            success: true,
-            status: "online",
-            event: "complete",
-            worker: "TON Scraper API"
-        });
-    }
+        diagnostics: {
+            api_key_configured:
+                Boolean(env.API_KEY),
+
+            source_url_configured:
+                Boolean(env.SOURCE_URL),
+
+            supabase_url_configured:
+                Boolean(env.SUPABASE_URL),
+
+            supabase_key_configured:
+                Boolean(env.SUPABASE_SERVICE_KEY)
+        }
+    });
+}
 
 
     /*
