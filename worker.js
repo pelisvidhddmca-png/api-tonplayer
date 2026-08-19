@@ -1,42 +1,34 @@
 /*
 |--------------------------------------------------------------------------
-| TON SCRAPER API WORKER — FINAL
+| TON SCRAPER API
+| FINAL
 |--------------------------------------------------------------------------
 |
 | Flujo:
 |
 | Player Worker
-|      │
-|      │ HTTPS + Authorization: Bearer API_KEY
-|      ▼
+|       |
+|       | Authorization: Bearer API_KEY
+|       v
 | Scraper Worker
-|      │
-|      ├── Cache HIT ───────────────► devuelve enlaces
-|      │
-|      └── Cache MISS
-|             │
-|             ▼
-|           Alpha
-|       PelixPlay API
-|             │
-|        all_embeds
-|             │
-|       ┌─────┼──────────┐
-|       ▼     ▼          ▼
-|     Latino Castellano Subtitulado
-|             │
-|             ▼
-|         Blacklist
-|             │
-|             ▼
-|           Cache
-|             │
-|             ▼
-|          respuesta
-|
-| Si Alpha no encuentra enlaces:
-|
-| Alpha → Beta (Supabase) → Cache → respuesta
+|       |
+|       +--> CACHE
+|       |      |
+|       |      +--> HIT -> devuelve enlaces
+|       |
+|       +--> Alpha / PelixPlay
+|       |      |
+|       |      +--> all_embeds
+|       |      |      |
+|       |      |      +--> Latino
+|       |      |      +--> Castellano
+|       |      |      +--> Subtitulado
+|       |      |
+|       |      +--> fallback embeds
+|       |
+|       +--> Beta / Supabase
+|              |
+|              +--> fallback final
 |
 |--------------------------------------------------------------------------
 | SECRETS
@@ -56,7 +48,7 @@ const CACHE_TTL = 6 * 60 * 60;
 
 /*
 |--------------------------------------------------------------------------
-| SERVIDORES BLOQUEADOS
+| BLACKLIST
 |--------------------------------------------------------------------------
 */
 
@@ -92,11 +84,13 @@ export default {
     async fetch(request, env, ctx) {
 
         if (request.method === "OPTIONS") {
+
             return new Response(null, {
                 status: 204,
                 headers: CORS_HEADERS
             });
         }
+
 
         if (request.method !== "GET") {
 
@@ -107,6 +101,7 @@ export default {
                 message: "Solo se permite GET."
             }, 405);
         }
+
 
         try {
 
@@ -122,6 +117,7 @@ export default {
                 "Worker error:",
                 error
             );
+
 
             return jsonResponse({
                 success: false,
@@ -163,9 +159,6 @@ async function router(
     |--------------------------------------------------------------------------
     | HEALTH
     |--------------------------------------------------------------------------
-    |
-    | No requiere API key.
-    |--------------------------------------------------------------------------
     */
 
     if (pathname === "/health") {
@@ -181,11 +174,14 @@ async function router(
 
     /*
     |--------------------------------------------------------------------------
-    | AUTENTICACIÓN
+    | AUTH
     |--------------------------------------------------------------------------
     */
 
-    if (!validateApiKey(request, env)) {
+    if (!validateApiKey(
+        request,
+        env
+    )) {
 
         return jsonResponse({
             success: false,
@@ -284,7 +280,7 @@ async function router(
 
     /*
     |--------------------------------------------------------------------------
-    | 404
+    | 404 REAL
     |--------------------------------------------------------------------------
     */
 
@@ -335,6 +331,7 @@ function validateApiKey(
 
 
     if (!authorization) {
+
         return false;
     }
 
@@ -346,6 +343,7 @@ function validateApiKey(
 
 
     if (!match) {
+
         return false;
     }
 
@@ -446,8 +444,7 @@ async function processContent({
 
         const result = {
 
-            success:
-                true,
+            success: true,
 
             status:
                 "complete",
@@ -521,8 +518,7 @@ async function processContent({
 
         const result = {
 
-            success:
-                true,
+            success: true,
 
             status:
                 "complete",
@@ -575,12 +571,22 @@ async function processContent({
 
     /*
     |--------------------------------------------------------------------------
-    | SIN RESULTADOS
+    | SIN ENLACES
+    |--------------------------------------------------------------------------
+    |
+    | IMPORTANTE:
+    |
+    | Esto es un resultado válido de la API.
+    | Se devuelve HTTP 200 para que el Player no
+    | interprete la ausencia de contenido como
+    | un error de comunicación.
     |--------------------------------------------------------------------------
     */
 
     return jsonResponse({
-        success: false,
+
+        success:
+            false,
 
         status:
             "source_unavailable",
@@ -608,7 +614,8 @@ async function processContent({
 
         links:
             []
-    }, 404);
+
+    }, 200);
 }
 
 
@@ -628,7 +635,9 @@ function buildCacheKey(
     let key;
 
 
-    if (type === "movie") {
+    if (
+        type === "movie"
+    ) {
 
         key =
             `movie:${tmdbId}`;
@@ -651,7 +660,7 @@ function buildCacheKey(
 
 /*
 |--------------------------------------------------------------------------
-| ALPHA — PELIXPLAY
+| ALPHA
 |--------------------------------------------------------------------------
 */
 
@@ -668,6 +677,7 @@ async function scrapeAlpha({
         console.error(
             "SOURCE_URL no está configurada."
         );
+
 
         return {
             success: false,
@@ -708,7 +718,9 @@ async function scrapeAlpha({
     );
 
 
-    if (type === "tv") {
+    if (
+        type === "tv"
+    ) {
 
         params.set(
             "season",
@@ -760,6 +772,7 @@ async function scrapeAlpha({
             error
         );
 
+
         return {
             success: false,
             status:
@@ -775,6 +788,7 @@ async function scrapeAlpha({
             "Alpha HTTP:",
             response.status
         );
+
 
         return {
             success: false,
@@ -802,6 +816,7 @@ async function scrapeAlpha({
             error
         );
 
+
         return {
             success: false,
             status:
@@ -813,48 +828,150 @@ async function scrapeAlpha({
 
     /*
     |--------------------------------------------------------------------------
-    | ALL_EMBEDS
-    |--------------------------------------------------------------------------
+    | PRIORIDAD 1
     |
-    | Importante:
-    | NO utilizamos solamente "embeds".
-    |
-    | "all_embeds" contiene:
-    |
-    | latino
-    | castellano
-    | subtitulado
-    | idioma36
+    | all_embeds
     |--------------------------------------------------------------------------
     */
 
-    const links =
-        extractAllEmbeds(
-            data
-        );
+    if (
+        data?.all_embeds &&
+        typeof data.all_embeds ===
+            "object" &&
+        !Array.isArray(
+            data.all_embeds
+        )
+    ) {
+
+        const links =
+            extractAllEmbeds(
+                data.all_embeds
+            );
 
 
-    const filtered =
-        links.filter(
-            link =>
-                !isBlacklisted(
-                    link.servidor
-                )
-        );
+        const filtered =
+            links.filter(
+                link =>
+                    !isBlacklisted(
+                        link.servidor
+                    )
+            );
 
+
+        if (
+            filtered.length > 0
+        ) {
+
+            return {
+
+                success:
+                    true,
+
+                status:
+                    "links_found",
+
+                mode:
+                    "all_embeds",
+
+                links:
+                    filtered
+            };
+        }
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | PRIORIDAD 2
+    |
+    | embeds
+    |--------------------------------------------------------------------------
+    |
+    | Algunos títulos antiguos no tienen all_embeds.
+    |
+    | Ejemplo:
+    |
+    | {
+    |   "embeds": {
+    |      "streamwish": [...],
+    |      "filelions": [...]
+    |   },
+    |   "language": "latino"
+    | }
+    |
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        data?.embeds &&
+        typeof data.embeds ===
+            "object" &&
+        !Array.isArray(
+            data.embeds
+        )
+    ) {
+
+        const fallbackLanguage =
+            normalizeLanguage(
+                data.language ||
+                "latino"
+            );
+
+
+        const links =
+            extractEmbedsFallback(
+                data.embeds,
+                fallbackLanguage
+            );
+
+
+        const filtered =
+            links.filter(
+                link =>
+                    !isBlacklisted(
+                        link.servidor
+                    )
+            );
+
+
+        if (
+            filtered.length > 0
+        ) {
+
+            return {
+
+                success:
+                    true,
+
+                status:
+                    "links_found",
+
+                mode:
+                    "embeds_fallback",
+
+                links:
+                    filtered
+            };
+        }
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | NADA EN ALPHA
+    |--------------------------------------------------------------------------
+    */
 
     return {
 
         success:
-            filtered.length > 0,
+            false,
 
         status:
-            filtered.length > 0
-                ? "links_found"
-                : "no_embeds",
+            "no_embeds",
 
         links:
-            filtered
+            []
     };
 }
 
@@ -866,24 +983,10 @@ async function scrapeAlpha({
 */
 
 function extractAllEmbeds(
-    data
+    allEmbeds
 ) {
 
     const result = [];
-
-
-    const allEmbeds =
-        data?.all_embeds;
-
-
-    if (
-        !allEmbeds ||
-        typeof allEmbeds !== "object" ||
-        Array.isArray(allEmbeds)
-    ) {
-
-        return [];
-    }
 
 
     /*
@@ -904,8 +1007,11 @@ function extractAllEmbeds(
 
         if (
             !servers ||
-            typeof servers !== "object" ||
-            Array.isArray(servers)
+            typeof servers !==
+                "object" ||
+            Array.isArray(
+                servers
+            )
         ) {
             continue;
         }
@@ -933,17 +1039,12 @@ function extractAllEmbeds(
             )
         ) {
 
-            /*
-            |--------------------------------------------------------------------------
-            | BLACKLIST
-            |--------------------------------------------------------------------------
-            */
-
             if (
                 isBlacklisted(
                     serverName
                 )
             ) {
+
                 continue;
             }
 
@@ -956,7 +1057,7 @@ function extractAllEmbeds(
 
             /*
             |--------------------------------------------------------------------------
-            | ARRAY DE URLS
+            | ARRAY
             |--------------------------------------------------------------------------
             */
 
@@ -975,6 +1076,7 @@ function extractAllEmbeds(
                         typeof url !==
                         "string"
                     ) {
+
                         continue;
                     }
 
@@ -984,6 +1086,7 @@ function extractAllEmbeds(
                             url
                         )
                     ) {
+
                         continue;
                     }
 
@@ -1006,14 +1109,16 @@ function extractAllEmbeds(
 
             /*
             |--------------------------------------------------------------------------
-            | URL ÚNICA
+            | STRING
             |--------------------------------------------------------------------------
             */
 
             if (
                 typeof urls ===
                     "string" &&
-                isHttpUrl(urls)
+                isHttpUrl(
+                    urls
+                )
             ) {
 
                 result.push({
@@ -1030,14 +1135,149 @@ function extractAllEmbeds(
     }
 
 
-    /*
-    |--------------------------------------------------------------------------
-    | DEDUPLICAR
-    |--------------------------------------------------------------------------
-    |
-    | Mismo idioma + misma URL = una sola entrada.
-    |--------------------------------------------------------------------------
-    */
+    return deduplicateLinks(
+        result
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| FALLBACK EMBEDS
+|--------------------------------------------------------------------------
+|
+| Para respuestas que NO tienen all_embeds.
+|--------------------------------------------------------------------------
+*/
+
+function extractEmbedsFallback(
+    embeds,
+    idioma
+) {
+
+    const result = [];
+
+
+    for (
+        const [
+            serverName,
+            urls
+        ]
+        of Object.entries(
+            embeds
+        )
+    ) {
+
+        if (
+            isBlacklisted(
+                serverName
+            )
+        ) {
+
+            continue;
+        }
+
+
+        const servidor =
+            normalizeServerName(
+                serverName
+            );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | ARRAY
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            Array.isArray(
+                urls
+            )
+        ) {
+
+            for (
+                const url
+                of urls
+            ) {
+
+                if (
+                    typeof url !==
+                    "string"
+                ) {
+
+                    continue;
+                }
+
+
+                if (
+                    !isHttpUrl(
+                        url
+                    )
+                ) {
+
+                    continue;
+                }
+
+
+                result.push({
+
+                    url_embed:
+                        url,
+
+                    servidor,
+
+                    idioma
+                });
+            }
+
+
+            continue;
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | STRING
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            typeof urls ===
+                "string" &&
+            isHttpUrl(
+                urls
+            )
+        ) {
+
+            result.push({
+
+                url_embed:
+                    urls,
+
+                servidor,
+
+                idioma
+            });
+        }
+    }
+
+
+    return deduplicateLinks(
+        result
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| DEDUPLICAR
+|--------------------------------------------------------------------------
+*/
+
+function deduplicateLinks(
+    links
+) {
 
     const unique =
         new Map();
@@ -1045,7 +1285,7 @@ function extractAllEmbeds(
 
     for (
         const link
-        of result
+        of links
     ) {
 
         const key =
@@ -1053,7 +1293,9 @@ function extractAllEmbeds(
 
 
         if (
-            !unique.has(key)
+            !unique.has(
+                key
+            )
         ) {
 
             unique.set(
@@ -1133,7 +1375,7 @@ function normalizeLanguage(
 
 /*
 |--------------------------------------------------------------------------
-| NORMALIZAR SERVIDORES
+| NORMALIZAR SERVIDOR
 |--------------------------------------------------------------------------
 */
 
@@ -1149,13 +1391,8 @@ function normalizeServerName(
 
     /*
     |--------------------------------------------------------------------------
-    | El API puede devolver:
-    |
-    | streamwish
-    | streamwish_2
-    | streamwish_3
-    |
-    | Todos se muestran como Streamwish.
+    | streamwish_2 -> Streamwish
+    | filelions_3  -> Filelions
     |--------------------------------------------------------------------------
     */
 
@@ -1271,6 +1508,7 @@ async function getBeta({
             "Supabase no está configurado."
         );
 
+
         return {
             success: false,
             status:
@@ -1368,6 +1606,7 @@ async function getBeta({
             error
         );
 
+
         return {
             success: false,
             status:
@@ -1383,6 +1622,7 @@ async function getBeta({
             "Beta HTTP:",
             response.status
         );
+
 
         return {
             success: false,
@@ -1415,7 +1655,9 @@ async function getBeta({
 
 
     if (
-        !Array.isArray(rows)
+        !Array.isArray(
+            rows
+        )
     ) {
 
         return {
@@ -1429,17 +1671,20 @@ async function getBeta({
 
     const links =
         rows
+
             .filter(
                 row =>
                     row &&
                     row.url_embed
             )
+
             .filter(
                 row =>
                     !isBlacklisted(
                         row.servidor
                     )
             )
+
             .map(
                 row => ({
 
@@ -1513,6 +1758,35 @@ function capitalize(
 }
 
 
+function isTrue(
+    value
+) {
+
+    if (!value) {
+
+        return false;
+    }
+
+
+    return [
+        "1",
+        "true",
+        "yes",
+        "on",
+        "force"
+    ].includes(
+        String(value)
+            .toLowerCase()
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| JSON RESPONSE
+|--------------------------------------------------------------------------
+*/
+
 function jsonResponse(
     data,
     status = 200,
@@ -1574,27 +1848,5 @@ function jsonResponse(
             status,
             headers
         }
-    );
-}
-
-
-function isTrue(
-    value
-) {
-
-    if (!value) {
-        return false;
-    }
-
-
-    return [
-        "1",
-        "true",
-        "yes",
-        "on",
-        "force"
-    ].includes(
-        String(value)
-            .toLowerCase()
     );
 }
