@@ -1,32 +1,57 @@
 /*
 |--------------------------------------------------------------------------
-| TON SCRAPER API WORKER
+| TON SCRAPER API WORKER — FINAL
 |--------------------------------------------------------------------------
 |
-| Arquitectura:
+| Flujo:
 |
 | Player Worker
-|      ↓ HTTPS + API_KEY
-| Scraper API Worker
-|      ↓
-| Cache
-|      ↓
-| Alpha (pelixplay)
-|      ↓
-| Beta (Supabase)
+|      │
+|      │ HTTPS + Authorization: Bearer API_KEY
+|      ▼
+| Scraper Worker
+|      │
+|      ├── Cache HIT ───────────────► devuelve enlaces
+|      │
+|      └── Cache MISS
+|             │
+|             ▼
+|           Alpha
+|       PelixPlay API
+|             │
+|        all_embeds
+|             │
+|       ┌─────┼──────────┐
+|       ▼     ▼          ▼
+|     Latino Castellano Subtitulado
+|             │
+|             ▼
+|         Blacklist
+|             │
+|             ▼
+|           Cache
+|             │
+|             ▼
+|          respuesta
+|
+| Si Alpha no encuentra enlaces:
+|
+| Alpha → Beta (Supabase) → Cache → respuesta
 |
 |--------------------------------------------------------------------------
-| Secrets requeridos:
+| SECRETS
+|--------------------------------------------------------------------------
 |
 | API_KEY
 | SOURCE_URL
 | SUPABASE_URL
 | SUPABASE_SERVICE_KEY
+|
 |--------------------------------------------------------------------------
 */
 
 
-const CACHE_TTL = 6 * 60 * 60; // 6 horas
+const CACHE_TTL = 6 * 60 * 60;
 
 
 /*
@@ -58,7 +83,7 @@ const CORS_HEADERS = {
 
 /*
 |--------------------------------------------------------------------------
-| ENTRYPOINT
+| WORKER
 |--------------------------------------------------------------------------
 */
 
@@ -74,6 +99,7 @@ export default {
         }
 
         if (request.method !== "GET") {
+
             return jsonResponse({
                 success: false,
                 status: "method_not_allowed",
@@ -83,18 +109,28 @@ export default {
         }
 
         try {
-            return await router(request, env, ctx);
+
+            return await router(
+                request,
+                env,
+                ctx
+            );
+
         } catch (error) {
 
-            console.error("Worker error:", error);
+            console.error(
+                "Worker error:",
+                error
+            );
 
             return jsonResponse({
                 success: false,
                 status: "worker_error",
                 event: "complete",
-                message: error instanceof Error
-                    ? error.message
-                    : String(error)
+                message:
+                    error instanceof Error
+                        ? error.message
+                        : String(error)
             }, 500);
         }
     }
@@ -107,11 +143,20 @@ export default {
 |--------------------------------------------------------------------------
 */
 
-async function router(request, env, ctx) {
+async function router(
+    request,
+    env,
+    ctx
+) {
 
-    const url = new URL(request.url);
+    const url =
+        new URL(request.url);
 
-    const pathname = url.pathname.replace(/\/+$/, "");
+    const pathname =
+        url.pathname.replace(
+            /\/+$/,
+            ""
+        );
 
 
     /*
@@ -119,32 +164,19 @@ async function router(request, env, ctx) {
     | HEALTH
     |--------------------------------------------------------------------------
     |
-    | Público.
+    | No requiere API key.
     |--------------------------------------------------------------------------
     */
 
     if (pathname === "/health") {
-    return jsonResponse({
-        success: true,
-        status: "online",
-        event: "complete",
-        worker: "TON Scraper API",
 
-        diagnostics: {
-            api_key_configured:
-                Boolean(env.API_KEY),
-
-            source_url_configured:
-                Boolean(env.SOURCE_URL),
-
-            supabase_url_configured:
-                Boolean(env.SUPABASE_URL),
-
-            supabase_key_configured:
-                Boolean(env.SUPABASE_SERVICE_KEY)
-        }
-    });
-}
+        return jsonResponse({
+            success: true,
+            status: "online",
+            event: "complete",
+            worker: "TON Scraper API"
+        });
+    }
 
 
     /*
@@ -168,27 +200,41 @@ async function router(request, env, ctx) {
     |--------------------------------------------------------------------------
     | MOVIE
     |--------------------------------------------------------------------------
+    |
+    | /play/movie/550
+    |--------------------------------------------------------------------------
     */
 
-    const movie = pathname.match(
-        /^\/play\/movie\/(\d+)$/
-    );
+    const movieMatch =
+        pathname.match(
+            /^\/play\/movie\/(\d+)$/
+        );
 
-    if (movie) {
+
+    if (movieMatch) {
 
         return processContent({
-            request,
             env,
             ctx,
 
-            tmdbId: movie[1],
-            type: "movie",
-            season: 0,
-            episode: 0,
+            tmdbId:
+                movieMatch[1],
 
-            force: isTrue(
-                url.searchParams.get("force")
-            )
+            type:
+                "movie",
+
+            season:
+                0,
+
+            episode:
+                0,
+
+            force:
+                isTrue(
+                    url.searchParams.get(
+                        "force"
+                    )
+                )
         });
     }
 
@@ -197,27 +243,41 @@ async function router(request, env, ctx) {
     |--------------------------------------------------------------------------
     | TV
     |--------------------------------------------------------------------------
+    |
+    | /play/tv/1399/1/1
+    |--------------------------------------------------------------------------
     */
 
-    const tv = pathname.match(
-        /^\/play\/tv\/(\d+)\/(\d+)\/(\d+)$/
-    );
+    const tvMatch =
+        pathname.match(
+            /^\/play\/tv\/(\d+)\/(\d+)\/(\d+)$/
+        );
 
-    if (tv) {
+
+    if (tvMatch) {
 
         return processContent({
-            request,
             env,
             ctx,
 
-            tmdbId: tv[1],
-            type: "tv",
-            season: Number(tv[2]),
-            episode: Number(tv[3]),
+            tmdbId:
+                tvMatch[1],
 
-            force: isTrue(
-                url.searchParams.get("force")
-            )
+            type:
+                "tv",
+
+            season:
+                Number(tvMatch[2]),
+
+            episode:
+                Number(tvMatch[3]),
+
+            force:
+                isTrue(
+                    url.searchParams.get(
+                        "force"
+                    )
+                )
         });
     }
 
@@ -234,9 +294,14 @@ async function router(request, env, ctx) {
         event: "complete",
 
         endpoints: {
-            health: "/health",
-            movie: "/play/movie/ID",
-            tv: "/play/tv/ID/SEASON/EPISODE"
+            health:
+                "/health",
+
+            movie:
+                "/play/movie/ID",
+
+            tv:
+                "/play/tv/ID/SEASON/EPISODE"
         }
     }, 404);
 }
@@ -248,35 +313,51 @@ async function router(request, env, ctx) {
 |--------------------------------------------------------------------------
 */
 
-function validateApiKey(request, env) {
+function validateApiKey(
+    request,
+    env
+) {
 
     if (!env.API_KEY) {
 
         console.error(
-            "Secret API_KEY no configurado."
+            "API_KEY no está configurada."
         );
 
         return false;
     }
 
+
     const authorization =
-        request.headers.get("Authorization");
+        request.headers.get(
+            "Authorization"
+        );
+
 
     if (!authorization) {
         return false;
     }
 
+
     const match =
-        authorization.match(/^Bearer\s+(.+)$/i);
+        authorization.match(
+            /^Bearer\s+(.+)$/i
+        );
+
 
     if (!match) {
         return false;
     }
 
+
     const providedKey =
         match[1].trim();
 
-    return providedKey === env.API_KEY;
+
+    return (
+        providedKey ===
+        env.API_KEY
+    );
 }
 
 
@@ -287,7 +368,6 @@ function validateApiKey(request, env) {
 */
 
 async function processContent({
-    request,
     env,
     ctx,
     tmdbId,
@@ -297,29 +377,6 @@ async function processContent({
     force
 }) {
 
-    /*
-    |--------------------------------------------------------------------------
-    | SOURCE
-    |--------------------------------------------------------------------------
-    */
-
-    if (!env.SOURCE_URL) {
-
-        return jsonResponse({
-            success: false,
-            status: "source_not_configured",
-            event: "complete",
-            message: "SOURCE_URL no está configurado."
-        }, 500);
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | CACHE KEY
-    |--------------------------------------------------------------------------
-    */
-
     const cacheKey =
         buildCacheKey(
             type,
@@ -328,32 +385,40 @@ async function processContent({
             episode
         );
 
+
     const cache =
         caches.default;
 
 
     /*
     |--------------------------------------------------------------------------
-    | CACHE HIT
+    | CACHE
     |--------------------------------------------------------------------------
     */
 
     if (!force) {
 
         const cached =
-            await cache.match(cacheKey);
+            await cache.match(
+                cacheKey
+            );
+
 
         if (cached) {
 
-            const response =
-                cloneResponse(cached);
+            const output =
+                await cached.json();
 
-            response.headers.set(
-                "X-Worker-Cache",
-                "HIT"
+
+            output.cache =
+                "HIT";
+
+
+            return jsonResponse(
+                output,
+                200,
+                CACHE_TTL
             );
-
-            return response;
         }
     }
 
@@ -366,19 +431,13 @@ async function processContent({
 
     const alpha =
         await scrapeAlpha({
+            env,
             tmdbId,
             type,
             season,
-            episode,
-            sourceUrl: env.SOURCE_URL
+            episode
         });
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | ALPHA ENCONTRÓ ENLACES
-    |--------------------------------------------------------------------------
-    */
 
     if (
         alpha.success &&
@@ -386,22 +445,36 @@ async function processContent({
     ) {
 
         const result = {
-            success: true,
-            status: "complete",
-            event: "complete",
 
-            source: "Alpha",
+            success:
+                true,
 
-            cache: "MISS",
+            status:
+                "complete",
 
-            tmdb_id: tmdbId,
+            event:
+                "complete",
+
+            source:
+                "Alpha",
+
+            cache:
+                "MISS",
+
+            tmdb_id:
+                tmdbId,
+
             type,
+
             season,
+
             episode,
 
-            found: alpha.links.length,
+            found:
+                alpha.links.length,
 
-            links: alpha.links
+            links:
+                alpha.links
         };
 
 
@@ -421,15 +494,7 @@ async function processContent({
         );
 
 
-        const output =
-            cloneResponse(response);
-
-        output.headers.set(
-            "X-Worker-Cache",
-            "MISS"
-        );
-
-        return output;
+        return response;
     }
 
 
@@ -441,19 +506,13 @@ async function processContent({
 
     const beta =
         await getBeta({
+            env,
             tmdbId,
             type,
             season,
-            episode,
-            env
+            episode
         });
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | BETA ENCONTRÓ ENLACES
-    |--------------------------------------------------------------------------
-    */
 
     if (
         beta.success &&
@@ -461,22 +520,36 @@ async function processContent({
     ) {
 
         const result = {
-            success: true,
-            status: "complete",
-            event: "complete",
 
-            source: "Beta",
+            success:
+                true,
 
-            cache: "MISS",
+            status:
+                "complete",
 
-            tmdb_id: tmdbId,
+            event:
+                "complete",
+
+            source:
+                "Beta",
+
+            cache:
+                "MISS",
+
+            tmdb_id:
+                tmdbId,
+
             type,
+
             season,
+
             episode,
 
-            found: beta.links.length,
+            found:
+                beta.links.length,
 
-            links: beta.links
+            links:
+                beta.links
         };
 
 
@@ -496,42 +569,45 @@ async function processContent({
         );
 
 
-        const output =
-            cloneResponse(response);
-
-        output.headers.set(
-            "X-Worker-Cache",
-            "MISS"
-        );
-
-        return output;
+        return response;
     }
 
 
     /*
     |--------------------------------------------------------------------------
-    | NO ENCONTRADO
+    | SIN RESULTADOS
     |--------------------------------------------------------------------------
     */
 
     return jsonResponse({
         success: false,
 
-        status: "source_unavailable",
+        status:
+            "source_unavailable",
 
-        event: "complete",
+        event:
+            "complete",
 
-        source: "Alpha",
-        fallback: "Beta",
+        source:
+            "Alpha",
 
-        tmdb_id: tmdbId,
+        fallback:
+            "Beta",
+
+        tmdb_id:
+            tmdbId,
+
         type,
+
         season,
+
         episode,
 
-        found: 0,
+        found:
+            0,
 
-        links: []
+        links:
+            []
     }, 404);
 }
 
@@ -549,10 +625,19 @@ function buildCacheKey(
     episode
 ) {
 
-    const key =
-        type === "movie"
-            ? `movie:${tmdbId}`
-            : `tv:${tmdbId}:${season}:${episode}`;
+    let key;
+
+
+    if (type === "movie") {
+
+        key =
+            `movie:${tmdbId}`;
+
+    } else {
+
+        key =
+            `tv:${tmdbId}:${season}:${episode}`;
+    }
 
 
     return new Request(
@@ -566,28 +651,61 @@ function buildCacheKey(
 
 /*
 |--------------------------------------------------------------------------
-| SCRAPER ALPHA
+| ALPHA — PELIXPLAY
 |--------------------------------------------------------------------------
 */
 
 async function scrapeAlpha({
+    env,
     tmdbId,
     type,
     season,
-    episode,
-    sourceUrl
+    episode
 }) {
 
-    sourceUrl =
-        sourceUrl.replace(/\/+$/, "");
+    if (!env.SOURCE_URL) {
+
+        console.error(
+            "SOURCE_URL no está configurada."
+        );
+
+        return {
+            success: false,
+            status:
+                "source_not_configured",
+            links: []
+        };
+    }
+
+
+    const sourceUrl =
+        env.SOURCE_URL
+            .replace(
+                /\/+$/,
+                ""
+            );
 
 
     const params =
         new URLSearchParams();
 
-    params.set("action", "details");
-    params.set("id", tmdbId);
-    params.set("type", type);
+
+    params.set(
+        "action",
+        "details"
+    );
+
+
+    params.set(
+        "id",
+        tmdbId
+    );
+
+
+    params.set(
+        "type",
+        type
+    );
 
 
     if (type === "tv") {
@@ -610,35 +728,42 @@ async function scrapeAlpha({
 
     let response;
 
+
     try {
 
-        response = await fetch(endpoint, {
-            method: "GET",
+        response =
+            await fetch(
+                endpoint,
+                {
+                    method: "GET",
 
-            redirect: "follow",
+                    redirect: "follow",
 
-            headers: {
-                "Accept":
-                    "application/json,text/plain,*/*",
+                    headers: {
 
-                "Accept-Language":
-                    "es-ES,es;q=0.9,en;q=0.8",
+                        "Accept":
+                            "application/json,text/plain,*/*",
 
-                "User-Agent":
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
-            }
-        });
+                        "Accept-Language":
+                            "es-ES,es;q=0.9,en;q=0.8",
+
+                        "User-Agent":
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
+                    }
+                }
+            );
 
     } catch (error) {
 
         console.error(
-            "Alpha request:",
+            "Alpha request error:",
             error
         );
 
         return {
             success: false,
-            status: "request_error",
+            status:
+                "request_error",
             links: []
         };
     }
@@ -653,14 +778,17 @@ async function scrapeAlpha({
 
         return {
             success: false,
-            status: "http_error",
-            http: response.status,
+            status:
+                "http_error",
+            http:
+                response.status,
             links: []
         };
     }
 
 
     let data;
+
 
     try {
 
@@ -670,13 +798,14 @@ async function scrapeAlpha({
     } catch (error) {
 
         console.error(
-            "Alpha JSON:",
+            "Alpha JSON error:",
             error
         );
 
         return {
             success: false,
-            status: "invalid_json",
+            status:
+                "invalid_json",
             links: []
         };
     }
@@ -684,19 +813,26 @@ async function scrapeAlpha({
 
     /*
     |--------------------------------------------------------------------------
-    | EXTRAER ALL_EMBEDS
+    | ALL_EMBEDS
+    |--------------------------------------------------------------------------
+    |
+    | Importante:
+    | NO utilizamos solamente "embeds".
+    |
+    | "all_embeds" contiene:
+    |
+    | latino
+    | castellano
+    | subtitulado
+    | idioma36
     |--------------------------------------------------------------------------
     */
 
     const links =
-        extractAllEmbeds(data);
+        extractAllEmbeds(
+            data
+        );
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | BLACKLIST
-    |--------------------------------------------------------------------------
-    */
 
     const filtered =
         links.filter(
@@ -708,6 +844,7 @@ async function scrapeAlpha({
 
 
     return {
+
         success:
             filtered.length > 0,
 
@@ -716,7 +853,8 @@ async function scrapeAlpha({
                 ? "links_found"
                 : "no_embeds",
 
-        links: filtered
+        links:
+            filtered
     };
 }
 
@@ -727,9 +865,12 @@ async function scrapeAlpha({
 |--------------------------------------------------------------------------
 */
 
-function extractAllEmbeds(data) {
+function extractAllEmbeds(
+    data
+) {
 
     const result = [];
+
 
     const allEmbeds =
         data?.all_embeds;
@@ -737,15 +878,28 @@ function extractAllEmbeds(data) {
 
     if (
         !allEmbeds ||
-        typeof allEmbeds !== "object"
+        typeof allEmbeds !== "object" ||
+        Array.isArray(allEmbeds)
     ) {
+
         return [];
     }
 
 
+    /*
+    |--------------------------------------------------------------------------
+    | IDIOMAS
+    |--------------------------------------------------------------------------
+    */
+
     for (
-        const [languageKey, servers]
-        of Object.entries(allEmbeds)
+        const [
+            languageKey,
+            servers
+        ]
+        of Object.entries(
+            allEmbeds
+        )
     ) {
 
         if (
@@ -763,10 +917,27 @@ function extractAllEmbeds(data) {
             );
 
 
+        /*
+        |--------------------------------------------------------------------------
+        | SERVIDORES
+        |--------------------------------------------------------------------------
+        */
+
         for (
-            const [serverName, urls]
-            of Object.entries(servers)
+            const [
+                serverName,
+                urls
+            ]
+            of Object.entries(
+                servers
+            )
         ) {
+
+            /*
+            |--------------------------------------------------------------------------
+            | BLACKLIST
+            |--------------------------------------------------------------------------
+            */
 
             if (
                 isBlacklisted(
@@ -785,12 +956,14 @@ function extractAllEmbeds(data) {
 
             /*
             |--------------------------------------------------------------------------
-            | ARRAY
+            | ARRAY DE URLS
             |--------------------------------------------------------------------------
             */
 
             if (
-                Array.isArray(urls)
+                Array.isArray(
+                    urls
+                )
             ) {
 
                 for (
@@ -799,24 +972,33 @@ function extractAllEmbeds(data) {
                 ) {
 
                     if (
-                        typeof url !== "string"
+                        typeof url !==
+                        "string"
                     ) {
                         continue;
                     }
 
+
                     if (
-                        !isHttpUrl(url)
+                        !isHttpUrl(
+                            url
+                        )
                     ) {
                         continue;
                     }
 
 
                     result.push({
-                        url_embed: url,
+
+                        url_embed:
+                            url,
+
                         servidor,
+
                         idioma
                     });
                 }
+
 
                 continue;
             }
@@ -824,18 +1006,23 @@ function extractAllEmbeds(data) {
 
             /*
             |--------------------------------------------------------------------------
-            | STRING
+            | URL ÚNICA
             |--------------------------------------------------------------------------
             */
 
             if (
-                typeof urls === "string" &&
+                typeof urls ===
+                    "string" &&
                 isHttpUrl(urls)
             ) {
 
                 result.push({
-                    url_embed: urls,
+
+                    url_embed:
+                        urls,
+
                     servidor,
+
                     idioma
                 });
             }
@@ -846,6 +1033,9 @@ function extractAllEmbeds(data) {
     /*
     |--------------------------------------------------------------------------
     | DEDUPLICAR
+    |--------------------------------------------------------------------------
+    |
+    | Mismo idioma + misma URL = una sola entrada.
     |--------------------------------------------------------------------------
     */
 
@@ -882,7 +1072,7 @@ function extractAllEmbeds(data) {
 
 /*
 |--------------------------------------------------------------------------
-| IDIOMAS
+| NORMALIZAR IDIOMAS
 |--------------------------------------------------------------------------
 */
 
@@ -896,7 +1086,7 @@ function normalizeLanguage(
             .toLowerCase();
 
 
-    const languages = {
+    const map = {
 
         latino:
             "Latino",
@@ -923,42 +1113,60 @@ function normalizeLanguage(
             "Subtitulado",
 
         subtitulo:
-            "Subtitulado",
-
-        idioma36:
-            "Idioma36"
+            "Subtitulado"
     };
 
 
     if (
-        languages[value]
+        map[value]
     ) {
 
-        return languages[value];
+        return map[value];
     }
 
 
-    return capitalize(value);
+    return capitalize(
+        value
+    );
 }
 
 
 /*
 |--------------------------------------------------------------------------
-| SERVIDORES
+| NORMALIZAR SERVIDORES
 |--------------------------------------------------------------------------
 */
 
 function normalizeServerName(
-    name
+    server
 ) {
 
     const value =
-        String(name)
+        String(server)
             .trim()
             .toLowerCase();
 
 
-    const names = {
+    /*
+    |--------------------------------------------------------------------------
+    | El API puede devolver:
+    |
+    | streamwish
+    | streamwish_2
+    | streamwish_3
+    |
+    | Todos se muestran como Streamwish.
+    |--------------------------------------------------------------------------
+    */
+
+    const base =
+        value.replace(
+            /_\d+$/,
+            ""
+        );
+
+
+    const map = {
 
         streamwish:
             "Streamwish",
@@ -998,22 +1206,17 @@ function normalizeServerName(
     };
 
 
-    const base =
-        value.replace(
-            /_\d+$/,
-            ""
-        );
-
-
     if (
-        names[base]
+        map[base]
     ) {
 
-        return names[base];
+        return map[base];
     }
 
 
-    return capitalize(base);
+    return capitalize(
+        base
+    );
 }
 
 
@@ -1047,16 +1250,16 @@ function isBlacklisted(
 
 /*
 |--------------------------------------------------------------------------
-| SUPABASE / BETA
+| BETA — SUPABASE
 |--------------------------------------------------------------------------
 */
 
 async function getBeta({
+    env,
     tmdbId,
     type,
     season,
-    episode,
-    env
+    episode
 }) {
 
     if (
@@ -1064,9 +1267,14 @@ async function getBeta({
         !env.SUPABASE_SERVICE_KEY
     ) {
 
+        console.error(
+            "Supabase no está configurado."
+        );
+
         return {
             success: false,
-            status: "beta_not_configured",
+            status:
+                "beta_not_configured",
             links: []
         };
     }
@@ -1094,7 +1302,9 @@ async function getBeta({
     );
 
 
-    if (type === "tv") {
+    if (
+        type === "tv"
+    ) {
 
         params.set(
             "temporada",
@@ -1126,36 +1336,42 @@ async function getBeta({
 
     let response;
 
+
     try {
 
         response =
-            await fetch(endpoint, {
+            await fetch(
+                endpoint,
+                {
 
-                method: "GET",
+                    method:
+                        "GET",
 
-                headers: {
+                    headers: {
 
-                    "apikey":
-                        env.SUPABASE_SERVICE_KEY,
+                        "apikey":
+                            env.SUPABASE_SERVICE_KEY,
 
-                    "Authorization":
-                        `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+                        "Authorization":
+                            `Bearer ${env.SUPABASE_SERVICE_KEY}`,
 
-                    "Accept":
-                        "application/json"
+                        "Accept":
+                            "application/json"
+                    }
                 }
-            });
+            );
 
     } catch (error) {
 
         console.error(
-            "Beta request:",
+            "Beta request error:",
             error
         );
 
         return {
             success: false,
-            status: "request_error",
+            status:
+                "request_error",
             links: []
         };
     }
@@ -1170,13 +1386,17 @@ async function getBeta({
 
         return {
             success: false,
-            status: "http_error",
+            status:
+                "http_error",
+            http:
+                response.status,
             links: []
         };
     }
 
 
     let rows;
+
 
     try {
 
@@ -1187,17 +1407,21 @@ async function getBeta({
 
         return {
             success: false,
-            status: "invalid_json",
+            status:
+                "invalid_json",
             links: []
         };
     }
 
 
-    if (!Array.isArray(rows)) {
+    if (
+        !Array.isArray(rows)
+    ) {
 
         return {
             success: false,
-            status: "invalid_response",
+            status:
+                "invalid_response",
             links: []
         };
     }
@@ -1207,7 +1431,8 @@ async function getBeta({
         rows
             .filter(
                 row =>
-                    row?.url_embed
+                    row &&
+                    row.url_embed
             )
             .filter(
                 row =>
@@ -1217,6 +1442,7 @@ async function getBeta({
             )
             .map(
                 row => ({
+
                     url_embed:
                         row.url_embed,
 
@@ -1236,6 +1462,7 @@ async function getBeta({
 
 
     return {
+
         success:
             links.length > 0,
 
@@ -1255,61 +1482,33 @@ async function getBeta({
 |--------------------------------------------------------------------------
 */
 
-function isHttpUrl(value) {
+function isHttpUrl(
+    value
+) {
 
     return (
-        typeof value === "string" &&
-        /^https?:\/\//i.test(value)
+        typeof value ===
+            "string" &&
+        /^https?:\/\//i.test(
+            value
+        )
     );
 }
 
 
-function capitalize(value) {
+function capitalize(
+    value
+) {
 
     if (!value) {
+
         return "Desconocido";
     }
+
 
     return (
         value.charAt(0).toUpperCase() +
         value.slice(1)
-    );
-}
-
-
-function cloneResponse(response) {
-
-    const headers =
-        new Headers(
-            response.headers
-        );
-
-
-    for (
-        const [key, value]
-        of Object.entries(
-            CORS_HEADERS
-        )
-    ) {
-
-        headers.set(
-            key,
-            value
-        );
-    }
-
-
-    return new Response(
-        response.body,
-        {
-            status:
-                response.status,
-
-            statusText:
-                response.statusText,
-
-            headers
-        }
     );
 }
 
@@ -1331,7 +1530,10 @@ function jsonResponse(
 
 
     for (
-        const [key, value]
+        const [
+            key,
+            value
+        ]
         of Object.entries(
             CORS_HEADERS
         )
@@ -1344,11 +1546,13 @@ function jsonResponse(
     }
 
 
-    if (ttl > 0) {
+    if (
+        ttl > 0
+    ) {
 
         headers.set(
             "Cache-Control",
-            `public, max-age=${ttl}, s-maxage=${ttl}`
+            `public, max-age=${ttl}`
         );
 
     } else {
@@ -1374,7 +1578,9 @@ function jsonResponse(
 }
 
 
-function isTrue(value) {
+function isTrue(
+    value
+) {
 
     if (!value) {
         return false;
@@ -1388,6 +1594,7 @@ function isTrue(value) {
         "on",
         "force"
     ].includes(
-        String(value).toLowerCase()
+        String(value)
+            .toLowerCase()
     );
 }
