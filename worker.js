@@ -1386,7 +1386,6 @@ function renderLoadingGatePage({ mode, metadata, streamUrl, apiUrl, vastTagUrl }
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css" />
 <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/fill/style.css" />
-${vastTagUrl ? `<script src="https://imasdk.googleapis.com/js/sdkloader/ima3.js"></script>` : ""}
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body {
@@ -1466,17 +1465,26 @@ ${vastTagUrl ? `<script src="https://imasdk.googleapis.com/js/sdkloader/ima3.js"
   }
   .brand span.dot { width:6px; height:6px; border-radius:50%; background:#e5384b; box-shadow:0 0 12px #e5384b; }
 
-  /* ============ ANUNCIO VAST (ocupa toda la pantalla mientras dura) ============ */
+  /* ============ ANUNCIO VAST (reproductor propio, sin SDK de terceros) ============ */
   .ad-stage {
     position:fixed; inset:0; z-index:10;
     background:#000;
     display:none;
   }
   .ad-stage.show { display:block; }
-  .ad-video-container, .ad-ui-container { position:absolute; inset:0; width:100%; height:100%; }
-  .ad-ui-container { z-index:2; }
+  .ad-video {
+    position:absolute; inset:0; width:100%; height:100%;
+    object-fit:contain; background:#000;
+  }
+  /* Overlay clickeable para el ClickThrough del VAST — cubre todo el
+     video salvo la franja inferior donde viven los controles, para no
+     capturar clics destinados al botón de saltar. */
+  .ad-clickthrough {
+    position:absolute; inset:0; bottom:64px; z-index:2;
+    cursor: pointer;
+  }
   .ad-label {
-    position:absolute; top:14px; left:14px; z-index:3;
+    position:absolute; top:14px; left:14px; z-index:4;
     background: rgba(0,0,0,0.55);
     border: 1px solid rgba(255,255,255,0.15);
     color: rgba(255,255,255,0.75);
@@ -1490,6 +1498,36 @@ ${vastTagUrl ? `<script src="https://imasdk.googleapis.com/js/sdkloader/ima3.js"
     text-align:center; font-size:12px; color: rgba(255,255,255,0.55);
     padding: 0 20px; pointer-events:none;
   }
+  .ad-controls {
+    position:absolute; bottom:0; left:0; right:0; z-index:4;
+    height:64px; display:flex; align-items:center; justify-content:space-between;
+    gap:12px; padding: 0 16px;
+    background: linear-gradient(0deg, rgba(0,0,0,0.75), transparent);
+  }
+  .ad-progress-track {
+    position:absolute; bottom:0; left:0; right:0; height:3px;
+    background: rgba(255,255,255,0.18); z-index:5;
+  }
+  .ad-progress-fill {
+    height:100%; width:0%;
+    background: #e5384b;
+    transition: width .2s linear;
+  }
+  .ad-countdown {
+    font-size:12px; color: rgba(255,255,255,0.7); font-weight:600;
+    pointer-events:none;
+  }
+  .ad-skip-btn {
+    display:none;
+    align-items:center; gap:6px;
+    background: rgba(255,255,255,0.12); border:1px solid rgba(255,255,255,0.25);
+    color:#fff; font-family:inherit; font-size:13px; font-weight:700;
+    padding: 8px 16px; border-radius:99px; cursor:pointer;
+    backdrop-filter: blur(8px);
+    z-index:5;
+  }
+  .ad-skip-btn:hover { background: rgba(255,255,255,0.2); }
+  .ad-skip-btn.show { display:inline-flex; }
 
   /* --- Pantallas pequeñas / poca altura: tarjeta más compacta --- */
   @media (max-width: 420px), (max-height: 700px) {
@@ -1515,12 +1553,20 @@ ${vastTagUrl ? `<script src="https://imasdk.googleapis.com/js/sdkloader/ima3.js"
 </style>
 </head>
 <body>
-  <!-- Escenario del anuncio VAST: cubre toda la pantalla mientras dura -->
+  <!-- Escenario del anuncio VAST: reproductor propio, sin SDK de
+       terceros. Un <video> HTML5 nativo + controles nuestros (saltar,
+       barra de progreso, click-through) sobre el XML VAST parseado en
+       el cliente. -->
   <div class="ad-stage" id="ad-stage">
-    <div class="ad-video-container" id="ad-video-container"></div>
-    <div class="ad-ui-container" id="ad-ui-container"></div>
+    <video class="ad-video" id="ad-video" playsinline></video>
+    <a class="ad-clickthrough" id="ad-clickthrough" target="_blank" rel="noopener noreferrer" aria-label="Visitar anuncio"></a>
     <div class="ad-label">Anuncio</div>
     <div class="ad-loading-note" id="ad-loading-note">Preparando tu contenido en segundo plano…</div>
+    <div class="ad-progress-track"><div class="ad-progress-fill" id="ad-progress-fill"></div></div>
+    <div class="ad-controls">
+      <div class="ad-countdown" id="ad-countdown"></div>
+      <button class="ad-skip-btn" id="ad-skip-btn" type="button">Saltar anuncio <i class="ph ph-arrow-right"></i></button>
+    </div>
   </div>
 
   <div class="bg"></div>
@@ -1558,8 +1604,11 @@ ${vastTagUrl ? `<script src="https://imasdk.googleapis.com/js/sdkloader/ima3.js"
     count: document.getElementById("step-count"),
     spinner: document.getElementById("spinner"),
     adStage: document.getElementById("ad-stage"),
-    adVideoContainer: document.getElementById("ad-video-container"),
-    adUiContainer: document.getElementById("ad-ui-container"),
+    adVideo: document.getElementById("ad-video"),
+    adClickthrough: document.getElementById("ad-clickthrough"),
+    adProgressFill: document.getElementById("ad-progress-fill"),
+    adCountdown: document.getElementById("ad-countdown"),
+    adSkipBtn: document.getElementById("ad-skip-btn"),
   };
 
   // --- Estado de finalización de los dos procesos en paralelo -----------
@@ -1768,84 +1817,229 @@ ${vastTagUrl ? `<script src="https://imasdk.googleapis.com/js/sdkloader/ima3.js"
     };
   }
 
-  // --- Anuncio VAST (Google IMA SDK) ---------------------------------
+  // --- Anuncio VAST (reproductor propio, sin SDK de terceros) --------
   // Se reproduce en paralelo a la búsqueda/confirmación de datos. Al
-  // terminar (éxito, error, o skip) llama a markAdDone(), que solo
-  // navega si los datos también están listos.
+  // terminar (fin natural, error, o skip) llama a markAdDone(), que
+  // solo navega si los datos también están listos.
+  //
+  // Soporta VAST 2.0/3.0/4.0 simple: un <Ad><InLine> con un <Linear>
+  // (sin Wrappers anidados ni ad pods). Se parsea el XML directo con
+  // DOMParser, se elige el MediaFile más adecuado, y se reproduce con
+  // un <video> HTML5 nativo — sin iframes ni SDKs de terceros que
+  // puedan interferir con los clics del usuario.
+  var AD_SKIP_DEFAULT_SECONDS = 5; // fallback si el VAST no trae skipoffset
+  var adWatchdog = null;
+  var adSkipSeconds = null; // null = no permite saltar
+  var adTrackers = { impression: [], start: [], firstQuartile: [], midpoint: [], thirdQuartile: [], complete: [], clickTracking: [] };
+  var adFiredTrackers = {};
+
+  function parseSkipOffset(raw, durationSeconds) {
+    if (!raw) return null;
+    raw = raw.trim();
+    if (raw.indexOf("%") !== -1) {
+      var pct = parseFloat(raw);
+      if (isNaN(pct) || !durationSeconds) return null;
+      return Math.round((pct / 100) * durationSeconds);
+    }
+    // Formato HH:MM:SS(.mmm)
+    var parts = raw.split(":");
+    if (parts.length !== 3) return null;
+    var h = parseFloat(parts[0]) || 0;
+    var m = parseFloat(parts[1]) || 0;
+    var s = parseFloat(parts[2]) || 0;
+    return Math.round(h * 3600 + m * 60 + s);
+  }
+
+  function parseDurationToSeconds(raw) {
+    if (!raw) return null;
+    var parts = raw.trim().split(":");
+    if (parts.length !== 3) return null;
+    var h = parseFloat(parts[0]) || 0;
+    var m = parseFloat(parts[1]) || 0;
+    var s = parseFloat(parts[2]) || 0;
+    return h * 3600 + m * 60 + s;
+  }
+
+  function textOf(node) {
+    return node && node.textContent ? node.textContent.trim() : "";
+  }
+
+  function fireTrackers(urls) {
+    (urls || []).forEach(function (url) {
+      if (!url) return;
+      // Beacon simple: una imagen 1x1 basta para trackers de VAST, no
+      // requiere esperar respuesta ni bloquear nada.
+      var img = new Image();
+      img.src = url;
+    });
+  }
+
+  function fireTrackerOnce(key) {
+    if (adFiredTrackers[key]) return;
+    adFiredTrackers[key] = true;
+    fireTrackers(adTrackers[key]);
+  }
+
+  function parseVastXml(xmlText) {
+    var parser = new DOMParser();
+    var doc = parser.parseFromString(xmlText, "text/xml");
+    if (doc.querySelector("parsererror")) {
+      throw new Error("VAST XML inválido.");
+    }
+
+    var linear = doc.querySelector("InLine Linear, Ad Linear");
+    if (!linear) {
+      throw new Error("El VAST no contiene un <Linear> soportado (¿es un Wrapper?).");
+    }
+
+    var durationRaw = textOf(linear.querySelector("Duration"));
+    var durationSeconds = parseDurationToSeconds(durationRaw);
+
+    var mediaFiles = Array.prototype.slice.call(linear.querySelectorAll("MediaFile"));
+    var mp4 = mediaFiles.find(function (mf) {
+      var type = (mf.getAttribute("type") || "").toLowerCase();
+      return type.indexOf("mp4") !== -1;
+    }) || mediaFiles[0];
+
+    if (!mp4) {
+      throw new Error("El VAST no trae ningún MediaFile reproducible.");
+    }
+
+    var skipRaw = linear.getAttribute("skipoffset");
+    var skipSeconds = parseSkipOffset(skipRaw, durationSeconds);
+
+    var trackers = { impression: [], start: [], firstQuartile: [], midpoint: [], thirdQuartile: [], complete: [], clickTracking: [] };
+
+    Array.prototype.forEach.call(doc.querySelectorAll("Impression"), function (n) {
+      trackers.impression.push(textOf(n));
+    });
+    Array.prototype.forEach.call(linear.querySelectorAll("Tracking"), function (n) {
+      var event = (n.getAttribute("event") || "").toLowerCase();
+      var url = textOf(n);
+      if (!url) return;
+      if (event === "start") trackers.start.push(url);
+      else if (event === "firstquartile") trackers.firstQuartile.push(url);
+      else if (event === "midpoint") trackers.midpoint.push(url);
+      else if (event === "thirdquartile") trackers.thirdQuartile.push(url);
+      else if (event === "complete") trackers.complete.push(url);
+    });
+    Array.prototype.forEach.call(linear.querySelectorAll("ClickTracking"), function (n) {
+      var url = textOf(n);
+      if (url) trackers.clickTracking.push(url);
+    });
+
+    var clickThrough = textOf(linear.querySelector("ClickThrough"));
+
+    return {
+      mediaUrl: textOf(mp4),
+      durationSeconds: durationSeconds,
+      skipSeconds: skipSeconds,
+      trackers: trackers,
+      clickThrough: clickThrough,
+    };
+  }
+
   function initAndPlayAd() {
-    if (!VAST_TAG_URL || typeof google === "undefined" || !google.ima) {
+    if (!VAST_TAG_URL) {
       markAdDone();
       return;
     }
 
-    try {
-      var ima = google.ima;
-      var adDisplayContainer = new ima.AdDisplayContainer(dom.adVideoContainer);
-      var adsLoader = new ima.AdsLoader(adDisplayContainer);
+    // Watchdog: si el VAST tarda demasiado en cargar/parsear/reproducir,
+    // no dejamos al usuario esperando un anuncio que nunca arranca —
+    // continuamos al contenido igual.
+    adWatchdog = setTimeout(function () {
+      markAdDone();
+    }, 8000);
 
-      var adWatchdog = setTimeout(function () {
-        markAdDone();
-      }, 8000);
+    fetch(VAST_TAG_URL, { cache: "no-store" })
+      .then(function (res) {
+        if (!res.ok) throw new Error("VAST respondió " + res.status);
+        return res.text();
+      })
+      .then(function (xmlText) {
+        var vast = parseVastXml(xmlText);
+        adTrackers = vast.trackers;
 
-      function onAdError() {
+        if (vast.clickThrough) {
+          dom.adClickthrough.href = vast.clickThrough;
+        }
+
+        // skipoffset del propio VAST tiene prioridad; si no viene,
+        // usamos un default fijo razonable.
+        adSkipSeconds = vast.skipSeconds !== null ? vast.skipSeconds : AD_SKIP_DEFAULT_SECONDS;
+
+        dom.adVideo.src = vast.mediaUrl;
+        dom.adVideo.muted = false;
+
+        dom.adVideo.addEventListener("loadedmetadata", function () {
+          clearTimeout(adWatchdog);
+          dom.adStage.classList.add("show");
+          dom.adVideo.play().catch(function () {
+            // Autoplay con sonido bloqueado por el navegador: reintenta
+            // en silencio para no perder el anuncio por completo.
+            dom.adVideo.muted = true;
+            dom.adVideo.play().catch(function () { markAdDone(); });
+          });
+          fireTrackerOnce("impression");
+          fireTrackerOnce("start");
+        });
+
+        dom.adVideo.addEventListener("timeupdate", function () {
+          var duration = dom.adVideo.duration;
+          var current = dom.adVideo.currentTime;
+          if (!duration || isNaN(duration)) return;
+
+          var pct = Math.min(100, (current / duration) * 100);
+          dom.adProgressFill.style.width = pct + "%";
+
+          if (pct >= 25) fireTrackerOnce("firstQuartile");
+          if (pct >= 50) fireTrackerOnce("midpoint");
+          if (pct >= 75) fireTrackerOnce("thirdQuartile");
+
+          if (adSkipSeconds !== null) {
+            var remaining = Math.max(0, Math.ceil(adSkipSeconds - current));
+            if (remaining > 0) {
+              dom.adSkipBtn.classList.remove("show");
+              dom.adCountdown.textContent = "Puedes saltar en " + remaining + "s";
+            } else {
+              dom.adSkipBtn.classList.add("show");
+              dom.adCountdown.textContent = "";
+            }
+          } else {
+            var totalRemaining = Math.max(0, Math.ceil(duration - current));
+            dom.adCountdown.textContent = totalRemaining > 0 ? totalRemaining + "s" : "";
+          }
+        });
+
+        dom.adVideo.addEventListener("ended", function () {
+          fireTrackerOnce("complete");
+          markAdDone();
+        });
+
+        dom.adVideo.addEventListener("error", function () {
+          clearTimeout(adWatchdog);
+          markAdDone();
+        });
+      })
+      .catch(function () {
         clearTimeout(adWatchdog);
         markAdDone();
-      }
-
-      adsLoader.addEventListener(ima.AdErrorEvent.Type.AD_ERROR, onAdError, false);
-
-      adsLoader.addEventListener(
-        ima.AdsManagerLoadedEvent.Type.ADS_MANAGER_LOADED,
-        function (event) {
-          var settings = new ima.AdsRenderingSettings();
-          var adsManager = event.getAdsManager(dom.adVideoContainer, settings);
-
-          adsManager.addEventListener(ima.AdErrorEvent.Type.AD_ERROR, function () {
-            clearTimeout(adWatchdog);
-            try { adsManager.destroy(); } catch (e) {}
-            markAdDone();
-          });
-          adsManager.addEventListener(ima.AdEvent.Type.CONTENT_PAUSE_REQUESTED, function () {
-            clearTimeout(adWatchdog);
-            dom.adStage.classList.add("show");
-          });
-          // CONTENT_RESUME_REQUESTED es el evento que el SDK dispara tanto
-          // al hacer clic en "Saltar" como al terminar un ad individual
-          // normalmente — es la señal real de "podés continuar al
-          // contenido". ALL_ADS_COMPLETED cubre el pod completo de
-          // anuncios (puede haber varios en secuencia) y no es fiable
-          // como único disparador: escuchar solo ese evento es lo que
-          // causaba que "Saltar" no funcionara, quedando a la espera de
-          // un evento que a veces tarda más o no llega en el mismo punto.
-          adsManager.addEventListener(ima.AdEvent.Type.CONTENT_RESUME_REQUESTED, function () {
-            markAdDone();
-          });
-          adsManager.addEventListener(ima.AdEvent.Type.ALL_ADS_COMPLETED, function () {
-            markAdDone();
-          });
-
-          try {
-            adsManager.init(window.innerWidth, window.innerHeight, ima.ViewMode.NORMAL);
-            adsManager.start();
-          } catch (e) {
-            markAdDone();
-          }
-        },
-        false
-      );
-
-      adDisplayContainer.initialize();
-      var adsRequest = new ima.AdsRequest();
-      adsRequest.adTagUrl = VAST_TAG_URL;
-      adsRequest.linearAdSlotWidth = window.innerWidth;
-      adsRequest.linearAdSlotHeight = window.innerHeight;
-      adsRequest.nonLinearAdSlotWidth = window.innerWidth;
-      adsRequest.nonLinearAdSlotHeight = window.innerHeight / 3;
-      adsLoader.requestAds(adsRequest);
-    } catch (e) {
-      markAdDone();
-    }
+      });
   }
+
+  dom.adSkipBtn.addEventListener("click", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    markAdDone();
+  });
+
+  dom.adClickthrough.addEventListener("click", function () {
+    // El ClickThrough abre en nueva pestaña (target="_blank" en el
+    // <a>); reportamos el click al anunciante sin bloquear la
+    // navegación ni pausar el video.
+    fireTrackerOnce("clickTracking");
+  });
 
   // --- Arranque: dispara ambos procesos en paralelo -------------------
   if (MODE === "searching") {
