@@ -10,18 +10,12 @@
 | 3. SSE: Datos de TMDB recibidos
 | 4. SSE: Buscando servidores
 | 5. SSE: Consultando Alpha
-| 6. Alpha responde -> procesa enlaces
-| 7. Si Alpha no responde O tiene <= 4 enlaces válidos -> consulta Beta
-| 8. Beta consulta Supabase REST
-| 9. SSE: resultado de Alpha
-| 10. SSE: resultado de Beta
-| 11. SSE: Búsqueda completada
-|
-|--------------------------------------------------------------------------
-| Rutas:
-|
-| GET /play/movie/:tmdb_id
-| GET /play/tv/:tmdb_id/:season/:episode
+| 6. Procesa all_embeds de Alpha
+| 7. Si all_embeds no produce enlaces, usa embeds
+| 8. Si Alpha tiene <= 4 enlaces válidos, consulta Beta
+| 9. Beta consulta Supabase REST
+| 10. SSE: resultados
+| 11. Búsqueda completada
 |
 |--------------------------------------------------------------------------
 | Secrets:
@@ -35,14 +29,15 @@
 */
 
 
-/*
-|--------------------------------------------------------------------------
-| CONFIGURACIÓN
-|--------------------------------------------------------------------------
-*/
-
 const ALPHA_NAME = "Alpha";
 const BETA_NAME = "Beta";
+
+
+/*
+|--------------------------------------------------------------------------
+| SERVIDORES BLOQUEADOS
+|--------------------------------------------------------------------------
+*/
 
 const BLACKLISTED_SERVERS = new Set([
   "servidortrinity",
@@ -57,7 +52,7 @@ const BLACKLISTED_SERVERS = new Set([
 
 /*
 |--------------------------------------------------------------------------
-| HEADERS
+| HEADERS JSON
 |--------------------------------------------------------------------------
 */
 
@@ -81,7 +76,7 @@ const JSON_HEADERS = {
 
 /*
 |--------------------------------------------------------------------------
-| JSON
+| JSON RESPONSE
 |--------------------------------------------------------------------------
 */
 
@@ -216,87 +211,184 @@ function extractUrls(
 
 /*
 |--------------------------------------------------------------------------
-| PROCESAR IDIOMA
+| AGREGAR ENLACE
+|--------------------------------------------------------------------------
+|
+| Helper común para Alpha.
+|
 |--------------------------------------------------------------------------
 */
 
-function processLanguageObject(
-  languageName,
-  languageObject,
+function addAlphaLink(
   output,
-  seen
+  seen,
+  rawServerName,
+  rawUrl,
+  languageName
 ) {
+
+  const servidor =
+    String(
+      rawServerName || ""
+    ).trim();
+
+  /*
+  |--------------------------------------------------------------------------
+  | BLACKLIST
+  |--------------------------------------------------------------------------
+  */
+
   if (
-    !languageObject ||
-    typeof languageObject !==
-      "object"
+    isBlacklistedServer(
+      servidor
+    )
+  ) {
+    return false;
+  }
+
+  const url =
+    String(
+      rawUrl || ""
+    ).trim();
+
+  if (
+    !/^https?:\/\//i.test(
+      url
+    )
+  ) {
+    return false;
+  }
+
+  const idioma =
+    normalizeLanguage(
+      languageName
+    );
+
+  const key =
+    `${url}|${idioma}`;
+
+  if (
+    seen.has(key)
+  ) {
+    return false;
+  }
+
+  seen.add(key);
+
+  output.push({
+    url_embed:
+      url,
+
+    servidor:
+      servidor,
+
+    idioma:
+      idioma
+  });
+
+  return true;
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| PROCESAR all_embeds
+|--------------------------------------------------------------------------
+|
+| Estructura esperada:
+|
+| all_embeds: {
+|   latino: {
+|     streamwish: [...]
+|   },
+|   castellano: {
+|     ...
+|   }
+| }
+|
+|--------------------------------------------------------------------------
+*/
+
+function processAllEmbeds(
+  allEmbeds,
+  output,
+  seen,
+  diagnostics
+) {
+
+  if (
+    !allEmbeds ||
+    typeof allEmbeds !==
+      "object" ||
+    Array.isArray(
+      allEmbeds
+    )
   ) {
     return;
   }
 
+  diagnostics.all_embeds_languages =
+    Object.keys(
+      allEmbeds
+    );
+
   for (
     const [
-      rawServerName,
-      rawValue
-    ] of Object.entries(
+      rawLanguage,
       languageObject
+    ] of Object.entries(
+      allEmbeds
     )
   ) {
 
     if (
-      isBlacklistedServer(
-        rawServerName
+      !languageObject ||
+      typeof languageObject !==
+        "object" ||
+      Array.isArray(
+        languageObject
       )
     ) {
       continue;
     }
 
-    const urls =
-      extractUrls(
-        rawValue
-      );
-
-    if (
-      !urls.length
-    ) {
-      continue;
-    }
-
-    const idioma =
-      normalizeLanguage(
-        languageName
-      );
-
-    const servidor =
-      String(
-        rawServerName
-      ).trim();
-
     for (
-      const url of urls
+      const [
+        rawServerName,
+        rawValue
+      ] of Object.entries(
+        languageObject
+      )
     ) {
 
-      const key =
-        `${url}|${idioma}`;
+      diagnostics.all_embeds_servers++;
 
-      if (
-        seen.has(key)
+      const urls =
+        extractUrls(
+          rawValue
+        );
+
+      diagnostics.all_embeds_urls +=
+        urls.length;
+
+      for (
+        const url of urls
       ) {
-        continue;
+
+        if (
+          addAlphaLink(
+            output,
+            seen,
+            rawServerName,
+            url,
+            rawLanguage
+          )
+        ) {
+          diagnostics.all_embeds_valid++;
+        } else {
+          diagnostics.all_embeds_discarded++;
+        }
       }
-
-      seen.add(key);
-
-      output.push({
-        url_embed:
-          url,
-
-        servidor:
-          servidor,
-
-        idioma:
-          idioma
-      });
     }
   }
 }
@@ -304,19 +396,162 @@ function processLanguageObject(
 
 /*
 |--------------------------------------------------------------------------
-| EXTRAER ALPHA
+| PROCESAR embeds
+|--------------------------------------------------------------------------
+|
+| Estructura:
+|
+| embeds: {
+|   streamwish: [...],
+|   filelions: [...],
+|   voe: [...]
+| }
+|
+| Como embeds no contiene idioma,
+| usamos data.language si existe.
+|
+| Si tampoco existe, usamos "Desconocido".
+|
+|--------------------------------------------------------------------------
+*/
+
+function processEmbeds(
+  embeds,
+  language,
+  output,
+  seen,
+  diagnostics
+) {
+
+  if (
+    !embeds ||
+    typeof embeds !==
+      "object" ||
+    Array.isArray(
+      embeds
+    )
+  ) {
+    return;
+  }
+
+  diagnostics.embeds_servers =
+    Object.keys(
+      embeds
+    );
+
+  for (
+    const [
+      rawServerName,
+      rawValue
+    ] of Object.entries(
+      embeds
+    )
+  ) {
+
+    diagnostics.embeds_servers_count++;
+
+    const urls =
+      extractUrls(
+        rawValue
+      );
+
+    diagnostics.embeds_urls +=
+      urls.length;
+
+    for (
+      const url of urls
+    ) {
+
+      if (
+        addAlphaLink(
+          output,
+          seen,
+          rawServerName,
+          url,
+          language
+        )
+      ) {
+        diagnostics.embeds_valid++;
+      } else {
+        diagnostics.embeds_discarded++;
+      }
+    }
+  }
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| EXTRAER ENLACES ALPHA
+|--------------------------------------------------------------------------
+|
+| IMPORTANTE:
+|
+| 1. Primero intenta all_embeds.
+| 2. Si all_embeds produjo enlaces, los utiliza.
+| 3. Si NO produjo enlaces, usa embeds.
+|
 |--------------------------------------------------------------------------
 */
 
 function extractAlphaLinks(
   data
 ) {
+
   const links = [];
   const seen = new Set();
 
+  const diagnostics = {
+    raw_keys:
+      data &&
+      typeof data === "object"
+        ? Object.keys(data)
+        : [],
+
+    all_embeds_present:
+      !!(
+        data &&
+        data.all_embeds &&
+        typeof data.all_embeds ===
+          "object"
+      ),
+
+    embeds_present:
+      !!(
+        data &&
+        data.embeds &&
+        typeof data.embeds ===
+          "object"
+      ),
+
+    all_embeds_languages: [],
+
+    all_embeds_servers: 0,
+
+    all_embeds_urls: 0,
+
+    all_embeds_valid: 0,
+
+    all_embeds_discarded: 0,
+
+    embeds_servers: [],
+
+    embeds_servers_count: 0,
+
+    embeds_urls: 0,
+
+    embeds_valid: 0,
+
+    embeds_discarded: 0,
+
+    parser:
+      null
+  };
+
+
   /*
   |--------------------------------------------------------------------------
-  | all_embeds
+  | PRIORIDAD 1: all_embeds
   |--------------------------------------------------------------------------
   */
 
@@ -327,33 +562,31 @@ function extractAlphaLinks(
       "object"
   ) {
 
-    for (
-      const [
-        language,
-        languageObject
-      ] of Object.entries(
-        data.all_embeds
-      )
-    ) {
-
-      processLanguageObject(
-        language,
-        languageObject,
-        links,
-        seen
-      );
-    }
+    processAllEmbeds(
+      data.all_embeds,
+      links,
+      seen,
+      diagnostics
+    );
 
     if (
       links.length > 0
     ) {
-      return links;
+
+      diagnostics.parser =
+        "all_embeds";
+
+      return {
+        links,
+        diagnostics
+      };
     }
   }
 
+
   /*
   |--------------------------------------------------------------------------
-  | embeds
+  | PRIORIDAD 2: embeds
   |--------------------------------------------------------------------------
   */
 
@@ -364,71 +597,65 @@ function extractAlphaLinks(
       "object"
   ) {
 
-    const idioma =
-      normalizeLanguage(
-        data.language
-      );
+    /*
+    |--------------------------------------------------------------------------
+    | embeds no tiene idioma.
+    |
+    | Intentamos utilizar:
+    |
+    | data.language
+    | data.idioma
+    |
+    |--------------------------------------------------------------------------
+    */
 
-    for (
-      const [
-        rawServerName,
-        rawValue
-      ] of Object.entries(
-        data.embeds
-      )
+    const language =
+      data.language ||
+      data.idioma ||
+      "Desconocido";
+
+    processEmbeds(
+      data.embeds,
+      language,
+      links,
+      seen,
+      diagnostics
+    );
+
+    if (
+      links.length > 0
     ) {
 
-      if (
-        isBlacklistedServer(
-          rawServerName
-        )
-      ) {
-        continue;
-      }
+      diagnostics.parser =
+        "embeds";
 
-      const urls =
-        extractUrls(
-          rawValue
-        );
-
-      for (
-        const url of urls
-      ) {
-
-        const key =
-          `${url}|${idioma}`;
-
-        if (
-          seen.has(key)
-        ) {
-          continue;
-        }
-
-        seen.add(key);
-
-        links.push({
-          url_embed:
-            url,
-
-          servidor:
-            String(
-              rawServerName
-            ).trim(),
-
-          idioma:
-            idioma
-        });
-      }
+      return {
+        links,
+        diagnostics
+      };
     }
   }
 
-  return links;
+
+  /*
+  |--------------------------------------------------------------------------
+  | SIN RESULTADOS
+  |--------------------------------------------------------------------------
+  */
+
+  diagnostics.parser =
+    "none";
+
+  return {
+    links: [],
+    diagnostics
+  };
 }
 
 
 /*
 |--------------------------------------------------------------------------
-| ALPHA URL
+| BUILD ALPHA URL
 |--------------------------------------------------------------------------
 */
 
@@ -439,6 +666,7 @@ function buildAlphaUrl(
   season,
   episode
 ) {
+
   const url =
     new URL(
       sourceUrl
@@ -491,9 +719,11 @@ async function fetchAlpha(
   season,
   episode
 ) {
+
   if (
     !sourceUrl
   ) {
+
     return {
       success: false,
       source:
@@ -502,13 +732,15 @@ async function fetchAlpha(
       endpoint: null,
       error:
         "El Secret SOURCE_URL no está configurado.",
-      links: []
+      links: [],
+      diagnostics: null
     };
   }
 
   let endpoint;
 
   try {
+
     endpoint =
       buildAlphaUrl(
         sourceUrl,
@@ -517,9 +749,11 @@ async function fetchAlpha(
         season,
         episode
       );
+
   } catch (
     error
   ) {
+
     return {
       success: false,
       source:
@@ -531,7 +765,8 @@ async function fetchAlpha(
           error?.message ||
           String(error)
         }`,
-      links: []
+      links: [],
+      diagnostics: null
     };
   }
 
@@ -568,69 +803,144 @@ async function fetchAlpha(
     const text =
       await response.text();
 
+
+    /*
+    |--------------------------------------------------------------------------
+    | HTTP ERROR
+    |--------------------------------------------------------------------------
+    */
+
     if (
       !response.ok
     ) {
+
       return {
         success: false,
         source:
           ALPHA_NAME,
+
         http_code:
           response.status,
+
         endpoint,
+
+        content_type:
+          contentType,
+
         elapsed_ms:
           elapsed,
+
         error:
           `HTTP ${response.status}`,
+
         response_preview:
-          text.slice(0, 500),
-        links: []
+          text.slice(
+            0,
+            1000
+          ),
+
+        links: [],
+
+        diagnostics: null
       };
     }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | PARSE JSON
+    |--------------------------------------------------------------------------
+    */
 
     let data;
 
     try {
+
       data =
         JSON.parse(
           text
         );
+
     } catch {
+
       return {
         success: false,
         source:
           ALPHA_NAME,
+
         http_code:
           response.status,
+
         endpoint,
+
+        content_type:
+          contentType,
+
         elapsed_ms:
           elapsed,
+
         error:
           "Alpha devolvió una respuesta que no es JSON.",
+
         response_preview:
-          text.slice(0, 500),
-        links: []
+          text.slice(
+            0,
+            1000
+          ),
+
+        links: [],
+
+        diagnostics: null
       };
     }
 
-    const links =
+
+    /*
+    |--------------------------------------------------------------------------
+    | EXTRAER ENLACES
+    |--------------------------------------------------------------------------
+    */
+
+    const extracted =
       extractAlphaLinks(
         data
       );
 
     return {
       success: true,
+
       source:
         ALPHA_NAME,
+
       http_code:
         response.status,
+
       content_type:
         contentType,
+
       elapsed_ms:
         elapsed,
-      links,
-      raw:
-        data
+
+      links:
+        extracted.links,
+
+      diagnostics:
+        extracted.diagnostics,
+
+      /*
+      | No devolvemos todo el JSON
+      | para no inflar el SSE.
+      */
+      raw_keys:
+        extracted
+          .diagnostics
+          .raw_keys,
+
+      response_preview:
+        text.slice(
+          0,
+          1000
+        )
     };
 
   } catch (
@@ -639,17 +949,25 @@ async function fetchAlpha(
 
     return {
       success: false,
+
       source:
         ALPHA_NAME,
+
       http_code: 0,
+
       endpoint,
+
       elapsed_ms:
         Date.now() -
         started,
+
       error:
         error?.message ||
         String(error),
-      links: []
+
+      links: [],
+
+      diagnostics: null
     };
   }
 }
@@ -657,16 +975,11 @@ async function fetchAlpha(
 
 /*
 |--------------------------------------------------------------------------
-| CONSTRUIR BETA URL
+| BETA
 |--------------------------------------------------------------------------
 |
-| Acepta:
-|
-| https://proyecto.supabase.co
-|
-| https://proyecto.supabase.co/rest/v1
-|
-| https://proyecto.supabase.co/rest/v1/enlaces
+| ESTA PARTE SE MANTIENE COMO LA VERSIÓN
+| QUE YA ESTÁ FUNCIONANDO.
 |
 |--------------------------------------------------------------------------
 */
@@ -740,15 +1053,6 @@ function buildBetaUrl(
 }
 
 
-/*
-|--------------------------------------------------------------------------
-| FETCH BETA
-|--------------------------------------------------------------------------
-|
-| Supabase REST
-|--------------------------------------------------------------------------
-*/
-
 async function fetchBeta(
   betaUrl,
   betaSupabaseKey,
@@ -761,6 +1065,7 @@ async function fetchBeta(
   if (
     !betaUrl
   ) {
+
     return {
       success: false,
       source:
@@ -776,6 +1081,7 @@ async function fetchBeta(
   if (
     !betaSupabaseKey
   ) {
+
     return {
       success: false,
       source:
@@ -860,11 +1166,6 @@ async function fetchBeta(
     const text =
       await response.text();
 
-    /*
-    |--------------------------------------------------------------------------
-    | ERROR HTTP
-    |--------------------------------------------------------------------------
-    */
 
     if (
       !response.ok
@@ -899,17 +1200,15 @@ async function fetchBeta(
           `HTTP ${httpCode}`,
 
         response_preview:
-          text.slice(0, 1000),
+          text.slice(
+            0,
+            1000
+          ),
 
         links: []
       };
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | JSON
-    |--------------------------------------------------------------------------
-    */
 
     let data;
 
@@ -938,17 +1237,15 @@ async function fetchBeta(
           "Beta respondió HTTP 200 pero el cuerpo no es JSON.",
 
         response_preview:
-          text.slice(0, 1000),
+          text.slice(
+            0,
+            1000
+          ),
 
         links: []
       };
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | SUPABASE DEBE DEVOLVER ARRAY
-    |--------------------------------------------------------------------------
-    */
 
     if (
       !Array.isArray(
@@ -983,11 +1280,6 @@ async function fetchBeta(
       };
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | PROCESAR ENLACES
-    |--------------------------------------------------------------------------
-    */
 
     const links = [];
     const seen = new Set();
@@ -1025,12 +1317,6 @@ async function fetchBeta(
           "Desconocido"
         ).trim();
 
-      /*
-      |--------------------------------------------------------------------------
-      | BLACKLIST
-      |--------------------------------------------------------------------------
-      */
-
       if (
         isBlacklistedServer(
           servidor
@@ -1067,16 +1353,22 @@ async function fetchBeta(
       });
     }
 
+
     return {
       success: true,
+
       source:
         BETA_NAME,
+
       http_code:
         httpCode,
+
       content_type:
         contentType,
+
       content_range:
         contentRange,
+
       endpoint,
 
       rows_received:
@@ -1109,14 +1401,6 @@ async function fetchBeta(
 /*
 |--------------------------------------------------------------------------
 | MERGE
-|--------------------------------------------------------------------------
-|
-| Si Alpha tiene <= 4 enlaces:
-| Beta se coloca primero.
-|
-| Si Alpha tiene > 4:
-| Alpha primero.
-|
 |--------------------------------------------------------------------------
 */
 
@@ -1181,7 +1465,7 @@ function mergeLinks(
 
 /*
 |--------------------------------------------------------------------------
-| SSE
+| SSE STREAM
 |--------------------------------------------------------------------------
 */
 
@@ -1192,15 +1476,10 @@ function createSSEStream(
   const encoder =
     new TextEncoder();
 
-  let controllerRef;
-
   const stream =
     new ReadableStream({
 
       start(controller) {
-
-        controllerRef =
-          controller;
 
         const send =
           (
@@ -1225,6 +1504,7 @@ function createSSEStream(
           )
           .then(
             () => {
+
               try {
                 controller.close();
               } catch {}
@@ -1305,6 +1585,7 @@ export default {
         request.url
       );
 
+
     /*
     |--------------------------------------------------------------------------
     | OPTIONS
@@ -1325,6 +1606,7 @@ export default {
         }
       );
     }
+
 
     /*
     |--------------------------------------------------------------------------
@@ -1347,6 +1629,7 @@ export default {
       );
     }
 
+
     /*
     |--------------------------------------------------------------------------
     | HEALTH
@@ -1368,6 +1651,7 @@ export default {
           "TON Scraper API"
       });
     }
+
 
     /*
     |--------------------------------------------------------------------------
@@ -1420,6 +1704,7 @@ export default {
       }
     }
 
+
     /*
     |--------------------------------------------------------------------------
     | RUTA
@@ -1448,6 +1733,7 @@ export default {
       );
     }
 
+
     const type =
       parts[1];
 
@@ -1468,6 +1754,7 @@ export default {
       );
     }
 
+
     const tmdbId =
       parts[2];
 
@@ -1486,6 +1773,7 @@ export default {
         400
       );
     }
+
 
     let season = 0;
     let episode = 0;
@@ -1522,9 +1810,10 @@ export default {
       }
     }
 
+
     /*
     |--------------------------------------------------------------------------
-    | SSE STREAM
+    | SSE
     |--------------------------------------------------------------------------
     */
 
@@ -1534,7 +1823,7 @@ export default {
 
           /*
           |--------------------------------------------------------------------------
-          | 1. TMDB RECEIVING
+          | TMDB RECEIVING
           |--------------------------------------------------------------------------
           */
 
@@ -1554,9 +1843,10 @@ export default {
             }
           );
 
+
           /*
           |--------------------------------------------------------------------------
-          | 2. TMDB RECEIVED
+          | TMDB RECEIVED
           |--------------------------------------------------------------------------
           */
 
@@ -1576,9 +1866,10 @@ export default {
             }
           );
 
+
           /*
           |--------------------------------------------------------------------------
-          | 3. SEARCHING
+          | SEARCHING
           |--------------------------------------------------------------------------
           */
 
@@ -1593,9 +1884,10 @@ export default {
             }
           );
 
+
           /*
           |--------------------------------------------------------------------------
-          | 4. ALPHA
+          | ALPHA SEARCH
           |--------------------------------------------------------------------------
           */
 
@@ -1612,6 +1904,7 @@ export default {
             }
           );
 
+
           const alpha =
             await fetchAlpha(
               env.SOURCE_URL,
@@ -1621,12 +1914,14 @@ export default {
               episode
             );
 
+
           const alphaFound =
             alpha.links.length;
 
+
           /*
           |--------------------------------------------------------------------------
-          | ALPHA RESULT
+          | ALPHA FOUND
           |--------------------------------------------------------------------------
           */
 
@@ -1663,8 +1958,56 @@ export default {
               http_code:
                 alpha.http_code,
 
+              content_type:
+                alpha.content_type ||
+                null,
+
               elapsed_ms:
-                alpha.elapsed_ms,
+                alpha.elapsed_ms ||
+                null,
+
+              raw_keys:
+                alpha.raw_keys ||
+                [],
+
+              parser:
+                alpha.diagnostics?.parser ||
+                null,
+
+              all_embeds_languages:
+                alpha.diagnostics
+                  ?.all_embeds_languages ||
+                [],
+
+              all_embeds_urls:
+                alpha.diagnostics
+                  ?.all_embeds_urls ||
+                0,
+
+              all_embeds_valid:
+                alpha.diagnostics
+                  ?.all_embeds_valid ||
+                0,
+
+              all_embeds_discarded:
+                alpha.diagnostics
+                  ?.all_embeds_discarded ||
+                0,
+
+              embeds_urls:
+                alpha.diagnostics
+                  ?.embeds_urls ||
+                0,
+
+              embeds_valid:
+                alpha.diagnostics
+                  ?.embeds_valid ||
+                0,
+
+              embeds_discarded:
+                alpha.diagnostics
+                  ?.embeds_discarded ||
+                0,
 
               error:
                 alpha.error ||
@@ -1672,22 +2015,20 @@ export default {
             }
           );
 
+
           /*
           |--------------------------------------------------------------------------
-          | 5. DECIDIR BETA
+          | DECIDIR BETA
           |--------------------------------------------------------------------------
           |
-          | Beta se consulta cuando:
-          |
-          | - Alpha no respondió
-          | - Alpha devolvió 4 o menos
-          |
+          | No se modifica la lógica existente.
           |--------------------------------------------------------------------------
           */
 
           const shouldUseBeta =
             !alpha.success ||
             alphaFound <= 4;
+
 
           let beta = {
             success: false,
@@ -1698,6 +2039,7 @@ export default {
             error: null,
             http_code: 0
           };
+
 
           if (
             shouldUseBeta
@@ -1722,6 +2064,7 @@ export default {
               }
             );
 
+
             beta =
               await fetchBeta(
                 env.BETA_URL,
@@ -1732,15 +2075,14 @@ export default {
                 episode
               );
 
+
             const betaFound =
               beta.links.length;
+
 
             /*
             |--------------------------------------------------------------------------
             | BETA FOUND
-            |--------------------------------------------------------------------------
-            |
-            | Diagnóstico detallado
             |--------------------------------------------------------------------------
             */
 
@@ -1807,7 +2149,7 @@ export default {
 
             /*
             |--------------------------------------------------------------------------
-            | BETA OMITIDO
+            | BETA SKIPPED
             |--------------------------------------------------------------------------
             */
 
@@ -1826,6 +2168,7 @@ export default {
               }
             );
           }
+
 
           /*
           |--------------------------------------------------------------------------
@@ -1852,12 +2195,14 @@ export default {
           const betaFirst =
             alphaLinks.length <= 4;
 
+
           const links =
             mergeLinks(
               alphaLinks,
               betaLinks,
               betaFirst
             );
+
 
           /*
           |--------------------------------------------------------------------------
@@ -1867,6 +2212,7 @@ export default {
 
           const success =
             links.length > 0;
+
 
           send(
             "complete",
@@ -1927,9 +2273,10 @@ export default {
         }
       );
 
+
     /*
     |--------------------------------------------------------------------------
-    | RESPUESTA SSE
+    | RESPUESTA
     |--------------------------------------------------------------------------
     */
 
