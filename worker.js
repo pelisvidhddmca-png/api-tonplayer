@@ -4,12 +4,14 @@
 |--------------------------------------------------------------------------
 |
 | Alpha:
+|   - Usa /embed/api.php
 |   - all_embeds -> embeds
 |   - blacklist
 |   - diagnóstico HTML detallado
 |
 | Beta:
-|   - lógica mantenida
+|   - Consulta Supabase REST
+|   - Se mantiene independiente de Alpha
 |
 |--------------------------------------------------------------------------
 | Secrets:
@@ -51,6 +53,12 @@ const SSE_HEADERS = {
   "access-control-allow-methods": "GET, OPTIONS"
 };
 
+/*
+|--------------------------------------------------------------------------
+| JSON
+|--------------------------------------------------------------------------
+*/
+
 function json(data, status = 200) {
   return new Response(
     JSON.stringify(data, null, 2),
@@ -60,6 +68,12 @@ function json(data, status = 200) {
     }
   );
 }
+
+/*
+|--------------------------------------------------------------------------
+| SERVIDORES
+|--------------------------------------------------------------------------
+*/
 
 function normalizeServerName(name) {
   return String(name || "")
@@ -73,6 +87,12 @@ function isBlacklistedServer(name) {
     normalizeServerName(name)
   );
 }
+
+/*
+|--------------------------------------------------------------------------
+| IDIOMAS
+|--------------------------------------------------------------------------
+*/
 
 function normalizeLanguage(language) {
   const value = String(language || "")
@@ -109,6 +129,12 @@ function normalizeLanguage(language) {
     : "Desconocido";
 }
 
+/*
+|--------------------------------------------------------------------------
+| URLS
+|--------------------------------------------------------------------------
+*/
+
 function extractUrls(value) {
   if (!Array.isArray(value)) {
     return [];
@@ -123,7 +149,7 @@ function extractUrls(value) {
 
 /*
 |--------------------------------------------------------------------------
-| ALPHA
+| ALPHA - PROCESAR ENLACE
 |--------------------------------------------------------------------------
 */
 
@@ -151,7 +177,8 @@ function addAlphaLink(
   const idioma =
     normalizeLanguage(languageName);
 
-  const key = `${url}|${idioma}`;
+  const key =
+    `${url}|${idioma}`;
 
   if (seen.has(key)) {
     return false;
@@ -167,6 +194,12 @@ function addAlphaLink(
 
   return true;
 }
+
+/*
+|--------------------------------------------------------------------------
+| ALPHA - ALL EMBEDS
+|--------------------------------------------------------------------------
+*/
 
 function processAllEmbeds(
   allEmbeds,
@@ -203,9 +236,11 @@ function processAllEmbeds(
     ) {
       diagnostics.all_embeds_servers++;
 
-      const urls = extractUrls(rawValue);
+      const urls =
+        extractUrls(rawValue);
 
-      diagnostics.all_embeds_urls += urls.length;
+      diagnostics.all_embeds_urls +=
+        urls.length;
 
       for (const url of urls) {
         if (
@@ -225,6 +260,12 @@ function processAllEmbeds(
     }
   }
 }
+
+/*
+|--------------------------------------------------------------------------
+| ALPHA - EMBEDS
+|--------------------------------------------------------------------------
+*/
 
 function processEmbeds(
   embeds,
@@ -250,9 +291,11 @@ function processEmbeds(
   ) {
     diagnostics.embeds_servers_count++;
 
-    const urls = extractUrls(rawValue);
+    const urls =
+      extractUrls(rawValue);
 
-    diagnostics.embeds_urls += urls.length;
+    diagnostics.embeds_urls +=
+      urls.length;
 
     for (const url of urls) {
       if (
@@ -272,13 +315,20 @@ function processEmbeds(
   }
 }
 
+/*
+|--------------------------------------------------------------------------
+| ALPHA - EXTRAER ENLACES
+|--------------------------------------------------------------------------
+*/
+
 function extractAlphaLinks(data) {
   const links = [];
   const seen = new Set();
 
   const diagnostics = {
     raw_keys:
-      data && typeof data === "object"
+      data &&
+      typeof data === "object"
         ? Object.keys(data)
         : [],
 
@@ -311,6 +361,12 @@ function extractAlphaLinks(data) {
     parser: null
   };
 
+  /*
+  |--------------------------------------------------------------------------
+  | PRIORIDAD 1: all_embeds
+  |--------------------------------------------------------------------------
+  */
+
   if (
     data &&
     data.all_embeds &&
@@ -324,7 +380,8 @@ function extractAlphaLinks(data) {
     );
 
     if (links.length > 0) {
-      diagnostics.parser = "all_embeds";
+      diagnostics.parser =
+        "all_embeds";
 
       return {
         links,
@@ -332,6 +389,12 @@ function extractAlphaLinks(data) {
       };
     }
   }
+
+  /*
+  |--------------------------------------------------------------------------
+  | PRIORIDAD 2: embeds
+  |--------------------------------------------------------------------------
+  */
 
   if (
     data &&
@@ -352,7 +415,8 @@ function extractAlphaLinks(data) {
     );
 
     if (links.length > 0) {
-      diagnostics.parser = "embeds";
+      diagnostics.parser =
+        "embeds";
 
       return {
         links,
@@ -361,13 +425,39 @@ function extractAlphaLinks(data) {
     }
   }
 
-  diagnostics.parser = "none";
+  diagnostics.parser =
+    "none";
 
   return {
     links: [],
     diagnostics
   };
 }
+
+/*
+|--------------------------------------------------------------------------
+| ALPHA - CONSTRUIR URL
+|--------------------------------------------------------------------------
+|
+| IMPORTANTE:
+|
+| El endpoint real es:
+|
+| /embed/api.php
+|
+| Ejemplo:
+|
+| SOURCE_URL=https://dominio.com
+|
+| genera:
+|
+| https://dominio.com/embed/api.php
+| ?action=details
+| &id=44956
+| &type=movie
+|
+|--------------------------------------------------------------------------
+*/
 
 function buildAlphaUrl(
   sourceUrl,
@@ -376,7 +466,44 @@ function buildAlphaUrl(
   season,
   episode
 ) {
-  const url = new URL(sourceUrl);
+  const url =
+    new URL(sourceUrl);
+
+  /*
+  |--------------------------------------------------------------------------
+  | Asegurar /embed/api.php
+  |--------------------------------------------------------------------------
+  */
+
+  if (
+    !url.pathname.endsWith(
+      "/embed/api.php"
+    )
+  ) {
+    const basePath =
+      url.pathname.replace(
+        /\/+$/,
+        ""
+      );
+
+    if (
+      basePath.endsWith(
+        "/embed"
+      )
+    ) {
+      url.pathname =
+        `${basePath}/api.php`;
+    } else {
+      url.pathname =
+        `${basePath}/embed/api.php`;
+    }
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Parámetros
+  |--------------------------------------------------------------------------
+  */
 
   url.searchParams.set(
     "action",
@@ -410,7 +537,7 @@ function buildAlphaUrl(
 
 /*
 |--------------------------------------------------------------------------
-| ALPHA — FETCH CON DIAGNÓSTICO HTML
+| ALPHA - FETCH
 |--------------------------------------------------------------------------
 */
 
@@ -437,13 +564,14 @@ async function fetchAlpha(
   let endpoint;
 
   try {
-    endpoint = buildAlphaUrl(
-      sourceUrl,
-      tmdbId,
-      type,
-      season,
-      episode
-    );
+    endpoint =
+      buildAlphaUrl(
+        sourceUrl,
+        tmdbId,
+        type,
+        season,
+        episode
+      );
   } catch (error) {
     return {
       success: false,
@@ -452,36 +580,40 @@ async function fetchAlpha(
       endpoint: null,
       error:
         `SOURCE_URL inválida: ${
-          error?.message || String(error)
+          error?.message ||
+          String(error)
         }`,
       links: [],
       diagnostics: null
     };
   }
 
-  const started = Date.now();
+  const started =
+    Date.now();
 
   try {
-    const response = await fetch(
-      endpoint,
-      {
-        method: "GET",
-        redirect: "follow",
-        headers: {
-          "Accept":
-            "application/json, text/plain, */*",
+    const response =
+      await fetch(
+        endpoint,
+        {
+          method: "GET",
+          redirect: "follow",
 
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+          headers: {
+            "Accept":
+              "application/json, text/plain, */*",
 
-          "Cache-Control":
-            "no-cache",
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
 
-          "Pragma":
-            "no-cache"
+            "Cache-Control":
+              "no-cache",
+
+            "Pragma":
+              "no-cache"
+          }
         }
-      }
-    );
+      );
 
     const elapsed =
       Date.now() - started;
@@ -492,7 +624,8 @@ async function fetchAlpha(
       ) || "";
 
     const finalUrl =
-      response.url || endpoint;
+      response.url ||
+      endpoint;
 
     const location =
       response.headers.get(
@@ -532,11 +665,15 @@ async function fetchAlpha(
       return {
         success: false,
         source: ALPHA_NAME,
-        http_code: response.status,
+        http_code:
+          response.status,
         endpoint,
-        final_url: finalUrl,
-        content_type: contentType,
-        elapsed_ms: elapsed,
+        final_url:
+          finalUrl,
+        content_type:
+          contentType,
+        elapsed_ms:
+          elapsed,
 
         error:
           `HTTP ${response.status}`,
@@ -549,7 +686,9 @@ async function fetchAlpha(
 
         location,
         server,
-        cf_ray: cfRay,
+        cf_ray:
+          cfRay,
+
         cf_cache_status:
           cfCacheStatus,
 
@@ -563,13 +702,11 @@ async function fetchAlpha(
 
     /*
     |--------------------------------------------------------------------------
-    | DIAGNÓSTICO ESPECIAL PARA HTML
+    | HTML
     |--------------------------------------------------------------------------
     |
-    | Alpha responde HTTP 200 pero text/html.
-    | Aquí NO intentamos tratar el HTML como JSON.
-    | Devolvemos información suficiente para saber
-    | qué está entregando realmente Alpha.
+    | Si llega HTML en lugar de JSON, devolvemos
+    | diagnóstico detallado.
     |--------------------------------------------------------------------------
     */
 
@@ -652,14 +789,15 @@ async function fetchAlpha(
 
     /*
     |--------------------------------------------------------------------------
-    | PARSE JSON
+    | JSON
     |--------------------------------------------------------------------------
     */
 
     let data;
 
     try {
-      data = JSON.parse(text);
+      data =
+        JSON.parse(text);
     } catch {
       return {
         success: false,
@@ -690,6 +828,7 @@ async function fetchAlpha(
 
         location,
         server,
+
         cf_ray:
           cfRay,
 
@@ -703,7 +842,7 @@ async function fetchAlpha(
 
     /*
     |--------------------------------------------------------------------------
-    | EXTRAER ENLACES
+    | PROCESAR JSON
     |--------------------------------------------------------------------------
     */
 
@@ -768,13 +907,9 @@ async function fetchAlpha(
   }
 }
 
-
 /*
 |--------------------------------------------------------------------------
-| BETA
-|--------------------------------------------------------------------------
-|
-| MANTENIDO.
+| BETA - URL
 |--------------------------------------------------------------------------
 */
 
@@ -795,15 +930,17 @@ function buildBetaUrl(
       "/rest/v1/enlaces"
     )
   ) {
-    // Correcto.
+    // Ya está completo.
   } else if (
     base.endsWith(
       "/rest/v1"
     )
   ) {
-    base += "/enlaces";
+    base +=
+      "/enlaces";
   } else {
-    base += "/rest/v1/enlaces";
+    base +=
+      "/rest/v1/enlaces";
   }
 
   const url =
@@ -831,6 +968,12 @@ function buildBetaUrl(
 
   return url.toString();
 }
+
+/*
+|--------------------------------------------------------------------------
+| BETA - FETCH
+|--------------------------------------------------------------------------
+*/
 
 async function fetchBeta(
   betaUrl,
@@ -867,13 +1010,14 @@ async function fetchBeta(
   let endpoint;
 
   try {
-    endpoint = buildBetaUrl(
-      betaUrl,
-      tmdbId,
-      type,
-      season,
-      episode
-    );
+    endpoint =
+      buildBetaUrl(
+        betaUrl,
+        tmdbId,
+        type,
+        season,
+        episode
+      );
   } catch (error) {
     return {
       success: false,
@@ -882,7 +1026,8 @@ async function fetchBeta(
       endpoint: null,
       error:
         `BETA_URL inválida: ${
-          error?.message || String(error)
+          error?.message ||
+          String(error)
         }`,
       links: []
     };
@@ -894,6 +1039,7 @@ async function fetchBeta(
         endpoint,
         {
           method: "GET",
+
           headers: {
             "apikey":
               betaSupabaseKey,
@@ -937,9 +1083,12 @@ async function fetchBeta(
       return {
         success: false,
         source: BETA_NAME,
-        http_code: httpCode,
-        content_type: contentType,
-        content_range: contentRange,
+        http_code:
+          httpCode,
+        content_type:
+          contentType,
+        content_range:
+          contentRange,
         endpoint,
 
         error:
@@ -958,14 +1107,18 @@ async function fetchBeta(
     let data;
 
     try {
-      data = JSON.parse(text);
+      data =
+        JSON.parse(text);
     } catch {
       return {
         success: false,
         source: BETA_NAME,
-        http_code: httpCode,
-        content_type: contentType,
-        content_range: contentRange,
+        http_code:
+          httpCode,
+        content_type:
+          contentType,
+        content_range:
+          contentRange,
         endpoint,
 
         error:
@@ -982,9 +1135,12 @@ async function fetchBeta(
       return {
         success: false,
         source: BETA_NAME,
-        http_code: httpCode,
-        content_type: contentType,
-        content_range: contentRange,
+        http_code:
+          httpCode,
+        content_type:
+          contentType,
+        content_range:
+          contentRange,
         endpoint,
 
         error:
@@ -1011,7 +1167,8 @@ async function fetchBeta(
 
       const url =
         String(
-          item.url_embed || ""
+          item.url_embed ||
+          ""
         ).trim();
 
       if (
@@ -1059,12 +1216,17 @@ async function fetchBeta(
     return {
       success: true,
       source: BETA_NAME,
-      http_code: httpCode,
-      content_type: contentType,
-      content_range: contentRange,
+      http_code:
+        httpCode,
+      content_type:
+        contentType,
+      content_range:
+        contentRange,
       endpoint,
+
       rows_received:
         data.length,
+
       links
     };
 
@@ -1081,7 +1243,6 @@ async function fetchBeta(
     };
   }
 }
-
 
 /*
 |--------------------------------------------------------------------------
@@ -1138,7 +1299,6 @@ function mergeLinks(
 
   return result;
 }
-
 
 /*
 |--------------------------------------------------------------------------
@@ -1200,7 +1360,6 @@ function createSSEStream(
   return stream;
 }
 
-
 /*
 |--------------------------------------------------------------------------
 | WORKER
@@ -1217,6 +1376,12 @@ export default {
         request.url
       );
 
+    /*
+    |--------------------------------------------------------------------------
+    | OPTIONS
+    |--------------------------------------------------------------------------
+    */
+
     if (
       request.method ===
       "OPTIONS"
@@ -1231,6 +1396,12 @@ export default {
       );
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | GET
+    |--------------------------------------------------------------------------
+    */
+
     if (
       request.method !==
       "GET"
@@ -1244,6 +1415,12 @@ export default {
         405
       );
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | HEALTH
+    |--------------------------------------------------------------------------
+    */
 
     if (
       url.pathname === "/"
@@ -1301,6 +1478,17 @@ export default {
         );
       }
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | RUTA
+    |--------------------------------------------------------------------------
+    |
+    | /play/movie/44956
+    |
+    | /play/tv/1399/1/1
+    |--------------------------------------------------------------------------
+    */
 
     const parts =
       url.pathname
@@ -1400,6 +1588,12 @@ export default {
       createSSEStream(
         async send => {
 
+          /*
+          |--------------------------------------------------------------------------
+          | TMDB
+          |--------------------------------------------------------------------------
+          */
+
           send(
             "tmdb_receiving",
             {
@@ -1431,6 +1625,12 @@ export default {
               episode
             }
           );
+
+          /*
+          |--------------------------------------------------------------------------
+          | BUSCANDO
+          |--------------------------------------------------------------------------
+          */
 
           send(
             "searching",
@@ -1473,12 +1673,6 @@ export default {
 
           const alphaFound =
             alpha.links.length;
-
-          /*
-          |--------------------------------------------------------------------------
-          | DIAGNÓSTICO ALPHA
-          |--------------------------------------------------------------------------
-          */
 
           send(
             "alpha_found",
@@ -1582,7 +1776,8 @@ export default {
                 [],
 
               parser:
-                alpha.diagnostics?.parser ||
+                alpha.diagnostics
+                  ?.parser ||
                 null,
 
               all_embeds_languages:
@@ -1629,6 +1824,10 @@ export default {
           /*
           |--------------------------------------------------------------------------
           | BETA
+          |--------------------------------------------------------------------------
+          |
+          | Si Alpha no responde o tiene 4 o menos,
+          | se consulta Beta.
           |--------------------------------------------------------------------------
           */
 
@@ -1755,7 +1954,7 @@ export default {
 
           /*
           |--------------------------------------------------------------------------
-          | MERGE
+          | COMBINAR
           |--------------------------------------------------------------------------
           */
 
