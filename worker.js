@@ -3,789 +3,767 @@
 | TON SCRAPER API
 |--------------------------------------------------------------------------
 |
-| Alpha:
-|   - Usa /embed/api.php
-|   - all_embeds -> embeds
-|   - blacklist
-|   - diagnóstico HTML detallado
+| Flujo:
 |
-| Beta:
-|   - Consulta Supabase REST
-|   - Se mantiene independiente de Alpha
+| Player
+|   |
+|   +--> Worker
+|          |
+|          +--> Alpha
+|          |      |
+|          |      +--> /embed/api.php
+|          |      +--> all_embeds
+|          |      +--> embeds fallback
+|          |
+|          +--> Beta
+|                 |
+|                 +--> KV cache 6 horas
+|                 |      |
+|                 |      +--> HIT
+|                 |
+|                 +--> Supabase
+|                        |
+|                        +--> guardar en KV
 |
 |--------------------------------------------------------------------------
-| Secrets:
+| SECRETS
+|--------------------------------------------------------------------------
 |
 | API_KEY
 | SOURCE_URL
-| BETA_URL
-| BETA_SUPABASE_KEY
+| SUPABASE_URL
+| SUPABASE_SERVICE_KEY
+|
+|--------------------------------------------------------------------------
+| KV
+|--------------------------------------------------------------------------
+|
+| Binding:
+|
+| BETA_CACHE
 |
 |--------------------------------------------------------------------------
 */
 
-const ALPHA_NAME = "Alpha";
-const BETA_NAME = "Beta";
+const BETA_CACHE_TTL = 6 * 60 * 60;
 
-const BLACKLISTED_SERVERS = new Set([
-  "servidortrinity",
-  "servidormahoutokoro",
-  "servidordeathstar",
-  "servidorgoldmember",
-  "powvideo",
-  "streamplay"
-]);
+/*
+|--------------------------------------------------------------------------
+| BLACKLIST
+|--------------------------------------------------------------------------
+*/
 
-const JSON_HEADERS = {
-  "content-type": "application/json; charset=UTF-8",
-  "cache-control": "no-store",
-  "access-control-allow-origin": "*",
-  "access-control-allow-headers": "Content-Type, Authorization",
-  "access-control-allow-methods": "GET, OPTIONS"
+const BLACKLIST = [
+    "servidortrinity",
+    "servidormahoutokoro",
+    "servidordeathstar",
+    "servidorgoldmember",
+
+    "powvideo",
+    "streamplay"
+];
+
+/*
+|--------------------------------------------------------------------------
+| CORS
+|--------------------------------------------------------------------------
+*/
+
+const CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization"
 };
 
-const SSE_HEADERS = {
-  "content-type": "text/event-stream; charset=UTF-8",
-  "cache-control": "no-cache, no-store, must-revalidate",
-  "connection": "keep-alive",
-  "access-control-allow-origin": "*",
-  "access-control-allow-headers": "Content-Type, Authorization",
-  "access-control-allow-methods": "GET, OPTIONS"
+/*
+|--------------------------------------------------------------------------
+| WORKER
+|--------------------------------------------------------------------------
+*/
+
+export default {
+
+    async fetch(request, env, ctx) {
+
+        if (request.method === "OPTIONS") {
+
+            return new Response(null, {
+                status: 204,
+                headers: CORS_HEADERS
+            });
+        }
+
+        if (request.method !== "GET") {
+
+            return jsonResponse({
+                success: false,
+                status: "method_not_allowed",
+                event: "complete",
+                message: "Solo se permite GET."
+            }, 405);
+        }
+
+        try {
+
+            return await router(
+                request,
+                env,
+                ctx
+            );
+
+        } catch (error) {
+
+            console.error(
+                "Worker error:",
+                error
+            );
+
+            return jsonResponse({
+                success: false,
+                status: "worker_error",
+                event: "complete",
+                message:
+                    error instanceof Error
+                        ? error.message
+                        : String(error)
+            }, 500);
+        }
+    }
 };
 
-/*
-|--------------------------------------------------------------------------
-| JSON
-|--------------------------------------------------------------------------
-*/
-
-function json(data, status = 200) {
-  return new Response(
-    JSON.stringify(data, null, 2),
-    {
-      status,
-      headers: JSON_HEADERS
-    }
-  );
-}
 
 /*
 |--------------------------------------------------------------------------
-| SERVIDORES
+| ROUTER
 |--------------------------------------------------------------------------
 */
 
-function normalizeServerName(name) {
-  return String(name || "")
-    .trim()
-    .toLowerCase()
-    .replace(/_\d+$/, "");
-}
-
-function isBlacklistedServer(name) {
-  return BLACKLISTED_SERVERS.has(
-    normalizeServerName(name)
-  );
-}
-
-/*
-|--------------------------------------------------------------------------
-| IDIOMAS
-|--------------------------------------------------------------------------
-*/
-
-function normalizeLanguage(language) {
-  const value = String(language || "")
-    .trim()
-    .toLowerCase();
-
-  if (
-    value === "latino" ||
-    value === "latin" ||
-    value === "español latino" ||
-    value === "espanol latino"
-  ) {
-    return "Latino";
-  }
-
-  if (
-    value === "castellano" ||
-    value === "español" ||
-    value === "espanol"
-  ) {
-    return "Castellano";
-  }
-
-  if (
-    value === "subtitulado" ||
-    value === "subtitle" ||
-    value === "sub"
-  ) {
-    return "Subtitulado";
-  }
-
-  return value
-    ? value.charAt(0).toUpperCase() + value.slice(1)
-    : "Desconocido";
-}
-
-/*
-|--------------------------------------------------------------------------
-| URLS
-|--------------------------------------------------------------------------
-*/
-
-function extractUrls(value) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter(
-    item =>
-      typeof item === "string" &&
-      /^https?:\/\//i.test(item)
-  );
-}
-
-/*
-|--------------------------------------------------------------------------
-| ALPHA - PROCESAR ENLACE
-|--------------------------------------------------------------------------
-*/
-
-function addAlphaLink(
-  output,
-  seen,
-  rawServerName,
-  rawUrl,
-  languageName
+async function router(
+    request,
+    env,
+    ctx
 ) {
-  const servidor =
-    String(rawServerName || "").trim();
 
-  if (isBlacklistedServer(servidor)) {
-    return false;
-  }
+    const url =
+        new URL(request.url);
 
-  const url =
-    String(rawUrl || "").trim();
+    const pathname =
+        url.pathname.replace(
+            /\/+$/,
+            ""
+        );
 
-  if (!/^https?:\/\//i.test(url)) {
-    return false;
-  }
-
-  const idioma =
-    normalizeLanguage(languageName);
-
-  const key =
-    `${url}|${idioma}`;
-
-  if (seen.has(key)) {
-    return false;
-  }
-
-  seen.add(key);
-
-  output.push({
-    url_embed: url,
-    servidor,
-    idioma
-  });
-
-  return true;
-}
-
-/*
-|--------------------------------------------------------------------------
-| ALPHA - ALL EMBEDS
-|--------------------------------------------------------------------------
-*/
-
-function processAllEmbeds(
-  allEmbeds,
-  output,
-  seen,
-  diagnostics
-) {
-  if (
-    !allEmbeds ||
-    typeof allEmbeds !== "object" ||
-    Array.isArray(allEmbeds)
-  ) {
-    return;
-  }
-
-  diagnostics.all_embeds_languages =
-    Object.keys(allEmbeds);
-
-  for (
-    const [rawLanguage, languageObject]
-    of Object.entries(allEmbeds)
-  ) {
-    if (
-      !languageObject ||
-      typeof languageObject !== "object" ||
-      Array.isArray(languageObject)
-    ) {
-      continue;
-    }
-
-    for (
-      const [rawServerName, rawValue]
-      of Object.entries(languageObject)
-    ) {
-      diagnostics.all_embeds_servers++;
-
-      const urls =
-        extractUrls(rawValue);
-
-      diagnostics.all_embeds_urls +=
-        urls.length;
-
-      for (const url of urls) {
-        if (
-          addAlphaLink(
-            output,
-            seen,
-            rawServerName,
-            url,
-            rawLanguage
-          )
-        ) {
-          diagnostics.all_embeds_valid++;
-        } else {
-          diagnostics.all_embeds_discarded++;
-        }
-      }
-    }
-  }
-}
-
-/*
-|--------------------------------------------------------------------------
-| ALPHA - EMBEDS
-|--------------------------------------------------------------------------
-*/
-
-function processEmbeds(
-  embeds,
-  language,
-  output,
-  seen,
-  diagnostics
-) {
-  if (
-    !embeds ||
-    typeof embeds !== "object" ||
-    Array.isArray(embeds)
-  ) {
-    return;
-  }
-
-  diagnostics.embeds_servers =
-    Object.keys(embeds);
-
-  for (
-    const [rawServerName, rawValue]
-    of Object.entries(embeds)
-  ) {
-    diagnostics.embeds_servers_count++;
-
-    const urls =
-      extractUrls(rawValue);
-
-    diagnostics.embeds_urls +=
-      urls.length;
-
-    for (const url of urls) {
-      if (
-        addAlphaLink(
-          output,
-          seen,
-          rawServerName,
-          url,
-          language
-        )
-      ) {
-        diagnostics.embeds_valid++;
-      } else {
-        diagnostics.embeds_discarded++;
-      }
-    }
-  }
-}
-
-/*
-|--------------------------------------------------------------------------
-| ALPHA - EXTRAER ENLACES
-|--------------------------------------------------------------------------
-*/
-
-function extractAlphaLinks(data) {
-  const links = [];
-  const seen = new Set();
-
-  const diagnostics = {
-    raw_keys:
-      data &&
-      typeof data === "object"
-        ? Object.keys(data)
-        : [],
-
-    all_embeds_present:
-      !!(
-        data &&
-        data.all_embeds &&
-        typeof data.all_embeds === "object"
-      ),
-
-    embeds_present:
-      !!(
-        data &&
-        data.embeds &&
-        typeof data.embeds === "object"
-      ),
-
-    all_embeds_languages: [],
-    all_embeds_servers: 0,
-    all_embeds_urls: 0,
-    all_embeds_valid: 0,
-    all_embeds_discarded: 0,
-
-    embeds_servers: [],
-    embeds_servers_count: 0,
-    embeds_urls: 0,
-    embeds_valid: 0,
-    embeds_discarded: 0,
-
-    parser: null
-  };
-
-  /*
-  |--------------------------------------------------------------------------
-  | PRIORIDAD 1: all_embeds
-  |--------------------------------------------------------------------------
-  */
-
-  if (
-    data &&
-    data.all_embeds &&
-    typeof data.all_embeds === "object"
-  ) {
-    processAllEmbeds(
-      data.all_embeds,
-      links,
-      seen,
-      diagnostics
-    );
-
-    if (links.length > 0) {
-      diagnostics.parser =
-        "all_embeds";
-
-      return {
-        links,
-        diagnostics
-      };
-    }
-  }
-
-  /*
-  |--------------------------------------------------------------------------
-  | PRIORIDAD 2: embeds
-  |--------------------------------------------------------------------------
-  */
-
-  if (
-    data &&
-    data.embeds &&
-    typeof data.embeds === "object"
-  ) {
-    const language =
-      data.language ||
-      data.idioma ||
-      "Desconocido";
-
-    processEmbeds(
-      data.embeds,
-      language,
-      links,
-      seen,
-      diagnostics
-    );
-
-    if (links.length > 0) {
-      diagnostics.parser =
-        "embeds";
-
-      return {
-        links,
-        diagnostics
-      };
-    }
-  }
-
-  diagnostics.parser =
-    "none";
-
-  return {
-    links: [],
-    diagnostics
-  };
-}
-
-/*
-|--------------------------------------------------------------------------
-| ALPHA - CONSTRUIR URL
-|--------------------------------------------------------------------------
-|
-| IMPORTANTE:
-|
-| El endpoint real es:
-|
-| /embed/api.php
-|
-| Ejemplo:
-|
-| SOURCE_URL=https://dominio.com
-|
-| genera:
-|
-| https://dominio.com/embed/api.php
-| ?action=details
-| &id=44956
-| &type=movie
-|
-|--------------------------------------------------------------------------
-*/
-
-function buildAlphaUrl(
-  sourceUrl,
-  tmdbId,
-  type,
-  season,
-  episode
-) {
-  const url =
-    new URL(sourceUrl);
-
-  /*
-  |--------------------------------------------------------------------------
-  | Asegurar /embed/api.php
-  |--------------------------------------------------------------------------
-  */
-
-  if (
-    !url.pathname.endsWith(
-      "/embed/api.php"
-    )
-  ) {
-    const basePath =
-      url.pathname.replace(
-        /\/+$/,
-        ""
-      );
-
-    if (
-      basePath.endsWith(
-        "/embed"
-      )
-    ) {
-      url.pathname =
-        `${basePath}/api.php`;
-    } else {
-      url.pathname =
-        `${basePath}/embed/api.php`;
-    }
-  }
-
-  /*
-  |--------------------------------------------------------------------------
-  | Parámetros
-  |--------------------------------------------------------------------------
-  */
-
-  url.searchParams.set(
-    "action",
-    "details"
-  );
-
-  url.searchParams.set(
-    "id",
-    String(tmdbId)
-  );
-
-  url.searchParams.set(
-    "type",
-    type
-  );
-
-  if (type === "tv") {
-    url.searchParams.set(
-      "season",
-      String(season)
-    );
-
-    url.searchParams.set(
-      "episode",
-      String(episode)
-    );
-  }
-
-  return url.toString();
-}
-
-/*
-|--------------------------------------------------------------------------
-| ALPHA - FETCH
-|--------------------------------------------------------------------------
-*/
-
-async function fetchAlpha(
-  sourceUrl,
-  tmdbId,
-  type,
-  season,
-  episode
-) {
-  if (!sourceUrl) {
-    return {
-      success: false,
-      source: ALPHA_NAME,
-      http_code: 0,
-      endpoint: null,
-      error:
-        "El Secret SOURCE_URL no está configurado.",
-      links: [],
-      diagnostics: null
-    };
-  }
-
-  let endpoint;
-
-  try {
-    endpoint =
-      buildAlphaUrl(
-        sourceUrl,
-        tmdbId,
-        type,
-        season,
-        episode
-      );
-  } catch (error) {
-    return {
-      success: false,
-      source: ALPHA_NAME,
-      http_code: 0,
-      endpoint: null,
-      error:
-        `SOURCE_URL inválida: ${
-          error?.message ||
-          String(error)
-        }`,
-      links: [],
-      diagnostics: null
-    };
-  }
-
-  const started =
-    Date.now();
-
-  try {
-    const response =
-      await fetch(
-        endpoint,
-        {
-          method: "GET",
-          redirect: "follow",
-
-          headers: {
-            "Accept":
-              "application/json, text/plain, */*",
-
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
-
-            "Cache-Control":
-              "no-cache",
-
-            "Pragma":
-              "no-cache"
-          }
-        }
-      );
-
-    const elapsed =
-      Date.now() - started;
-
-    const contentType =
-      response.headers.get(
-        "content-type"
-      ) || "";
-
-    const finalUrl =
-      response.url ||
-      endpoint;
-
-    const location =
-      response.headers.get(
-        "location"
-      );
-
-    const server =
-      response.headers.get(
-        "server"
-      );
-
-    const cfRay =
-      response.headers.get(
-        "cf-ray"
-      );
-
-    const cfCacheStatus =
-      response.headers.get(
-        "cf-cache-status"
-      );
-
-    const contentLength =
-      response.headers.get(
-        "content-length"
-      );
-
-    const text =
-      await response.text();
 
     /*
     |--------------------------------------------------------------------------
-    | HTTP ERROR
+    | HEALTH
+    |--------------------------------------------------------------------------
+    */
+
+    if (pathname === "/health") {
+
+        return jsonResponse({
+            success: true,
+            status: "online",
+            event: "complete",
+            worker: "TON Scraper API",
+            beta_cache:
+                env.BETA_CACHE
+                    ? "configured"
+                    : "missing"
+        });
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | API KEY
+    |--------------------------------------------------------------------------
+    */
+
+    if (!validateApiKey(
+        request,
+        env
+    )) {
+
+        return jsonResponse({
+            success: false,
+            status: "unauthorized",
+            event: "complete",
+            message:
+                "API key inválida o ausente."
+        }, 401);
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | MOVIE
+    |--------------------------------------------------------------------------
+    |
+    | /play/movie/550
+    |
+    |--------------------------------------------------------------------------
+    */
+
+    const movieMatch =
+        pathname.match(
+            /^\/play\/movie\/(\d+)$/
+        );
+
+
+    if (movieMatch) {
+
+        return processContent({
+            env,
+            ctx,
+
+            tmdbId:
+                movieMatch[1],
+
+            type:
+                "movie",
+
+            season:
+                0,
+
+            episode:
+                0,
+
+            force:
+                isTrue(
+                    url.searchParams.get(
+                        "force"
+                    )
+                )
+        });
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | TV
+    |--------------------------------------------------------------------------
+    |
+    | /play/tv/1399/1/1
+    |
+    |--------------------------------------------------------------------------
+    */
+
+    const tvMatch =
+        pathname.match(
+            /^\/play\/tv\/(\d+)\/(\d+)\/(\d+)$/
+        );
+
+
+    if (tvMatch) {
+
+        return processContent({
+            env,
+            ctx,
+
+            tmdbId:
+                tvMatch[1],
+
+            type:
+                "tv",
+
+            season:
+                Number(
+                    tvMatch[2]
+                ),
+
+            episode:
+                Number(
+                    tvMatch[3]
+                ),
+
+            force:
+                isTrue(
+                    url.searchParams.get(
+                        "force"
+                    )
+                )
+        });
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | 404
+    |--------------------------------------------------------------------------
+    */
+
+    return jsonResponse({
+        success: false,
+        status: "not_found",
+        event: "complete",
+
+        endpoints: {
+            health:
+                "/health",
+
+            movie:
+                "/play/movie/ID",
+
+            tv:
+                "/play/tv/ID/SEASON/EPISODE"
+        }
+
+    }, 404);
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| API KEY
+|--------------------------------------------------------------------------
+*/
+
+function validateApiKey(
+    request,
+    env
+) {
+
+    if (!env.API_KEY) {
+
+        console.error(
+            "API_KEY no está configurada."
+        );
+
+        return false;
+    }
+
+
+    const authorization =
+        request.headers.get(
+            "Authorization"
+        );
+
+
+    if (!authorization) {
+        return false;
+    }
+
+
+    const match =
+        authorization.match(
+            /^Bearer\s+(.+)$/i
+        );
+
+
+    if (!match) {
+        return false;
+    }
+
+
+    const providedKey =
+        match[1].trim();
+
+
+    return (
+        providedKey ===
+        env.API_KEY
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| PROCESAR CONTENIDO
+|--------------------------------------------------------------------------
+*/
+
+async function processContent({
+    env,
+    ctx,
+    tmdbId,
+    type,
+    season,
+    episode,
+    force
+}) {
+
+    /*
+    |--------------------------------------------------------------------------
+    | ALPHA
+    |--------------------------------------------------------------------------
+    */
+
+    const alpha =
+        await scrapeAlpha({
+            env,
+            tmdbId,
+            type,
+            season,
+            episode
+        });
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Si Alpha tiene resultados
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        alpha.success &&
+        alpha.links.length > 0
+    ) {
+
+        return jsonResponse({
+
+            success: true,
+
+            status:
+                "complete",
+
+            event:
+                "complete",
+
+            source:
+                "Alpha",
+
+            cache:
+                "MISS",
+
+            tmdb_id:
+                tmdbId,
+
+            type,
+
+            season,
+
+            episode,
+
+            found:
+                alpha.links.length,
+
+            links:
+                alpha.links
+
+        });
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | BETA
+    |--------------------------------------------------------------------------
+    */
+
+    const beta =
+        await getBeta({
+            env,
+            tmdbId,
+            type,
+            season,
+            episode,
+            force
+        });
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Beta encontró enlaces
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        beta.success &&
+        beta.links.length > 0
+    ) {
+
+        return jsonResponse({
+
+            success: true,
+
+            status:
+                "complete",
+
+            event:
+                "complete",
+
+            source:
+                "Beta",
+
+            cache:
+                beta.cache || "MISS",
+
+            tmdb_id:
+                tmdbId,
+
+            type,
+
+            season,
+
+            episode,
+
+            found:
+                beta.links.length,
+
+            links:
+                beta.links
+
+        });
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | NADA
+    |--------------------------------------------------------------------------
+    */
+
+    return jsonResponse({
+
+        success: false,
+
+        status:
+            "source_unavailable",
+
+        event:
+            "complete",
+
+        source:
+            "Alpha",
+
+        fallback:
+            "Beta",
+
+        tmdb_id:
+            tmdbId,
+
+        type,
+
+        season,
+
+        episode,
+
+        alpha_found:
+            alpha.links
+                ? alpha.links.length
+                : 0,
+
+        beta_found:
+            beta.links
+                ? beta.links.length
+                : 0,
+
+        found:
+            0,
+
+        links:
+            [],
+
+        alpha_error:
+            alpha.error || null,
+
+        beta_error:
+            beta.error || null,
+
+        message:
+            "Alpha y Beta no devolvieron servidores válidos."
+
+    }, 200);
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| CACHE KEY BETA
+|--------------------------------------------------------------------------
+*/
+
+function buildBetaCacheKey(
+    type,
+    tmdbId,
+    season,
+    episode
+) {
+
+    if (type === "movie") {
+
+        return `beta:movie:${tmdbId}`;
+    }
+
+
+    return `beta:tv:${tmdbId}:${season}:${episode}`;
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| ALPHA
+|--------------------------------------------------------------------------
+*/
+
+async function scrapeAlpha({
+    env,
+    tmdbId,
+    type,
+    season,
+    episode
+}) {
+
+    if (!env.SOURCE_URL) {
+
+        console.error(
+            "SOURCE_URL no está configurada."
+        );
+
+        return {
+            success: false,
+            status:
+                "source_not_configured",
+            links: [],
+            error:
+                "SOURCE_URL no está configurada."
+        };
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | IMPORTANTE
+    |
+    | SOURCE_URL es el dominio/base.
+    |
+    | El endpoint real es:
+    |
+    | /embed/api.php
+    |--------------------------------------------------------------------------
+    */
+
+    const sourceUrl =
+        env.SOURCE_URL
+            .replace(
+                /\/+$/,
+                ""
+            );
+
+
+    const params =
+        new URLSearchParams();
+
+
+    params.set(
+        "action",
+        "details"
+    );
+
+
+    params.set(
+        "id",
+        tmdbId
+    );
+
+
+    params.set(
+        "type",
+        type
+    );
+
+
+    if (type === "tv") {
+
+        params.set(
+            "season",
+            String(season)
+        );
+
+        params.set(
+            "episode",
+            String(episode)
+        );
+    }
+
+
+    const endpoint =
+        `${sourceUrl}/embed/api.php?${params.toString()}`;
+
+
+    let response;
+
+
+    try {
+
+        response =
+            await fetch(
+                endpoint,
+                {
+                    method: "GET",
+
+                    redirect: "follow",
+
+                    headers: {
+
+                        "Accept":
+                            "application/json,text/plain,*/*",
+
+                        "Accept-Language":
+                            "es-ES,es;q=0.9,en;q=0.8",
+
+                        "User-Agent":
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
+                    }
+                }
+            );
+
+    } catch (error) {
+
+        console.error(
+            "Alpha request error:",
+            error
+        );
+
+        return {
+
+            success: false,
+
+            status:
+                "request_error",
+
+            links: [],
+
+            error:
+                error instanceof Error
+                    ? error.message
+                    : String(error)
+        };
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | HTTP
     |--------------------------------------------------------------------------
     */
 
     if (!response.ok) {
-      return {
-        success: false,
-        source: ALPHA_NAME,
-        http_code:
-          response.status,
-        endpoint,
-        final_url:
-          finalUrl,
-        content_type:
-          contentType,
-        elapsed_ms:
-          elapsed,
 
-        error:
-          `HTTP ${response.status}`,
+        console.error(
+            "Alpha HTTP:",
+            response.status
+        );
 
-        response_length:
-          text.length,
+        return {
 
-        response_preview:
-          text.slice(0, 1500),
+            success: false,
 
-        location,
-        server,
-        cf_ray:
-          cfRay,
+            status:
+                "http_error",
 
-        cf_cache_status:
-          cfCacheStatus,
+            http:
+                response.status,
 
-        content_length:
-          contentLength,
+            links: [],
 
-        links: [],
-        diagnostics: null
-      };
+            error:
+                `Alpha respondió HTTP ${response.status}`
+        };
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | HTML
-    |--------------------------------------------------------------------------
-    |
-    | Si llega HTML en lugar de JSON, devolvemos
-    | diagnóstico detallado.
-    |--------------------------------------------------------------------------
-    */
-
-    if (
-      contentType
-        .toLowerCase()
-        .includes("text/html")
-    ) {
-      return {
-        success: false,
-        source: ALPHA_NAME,
-
-        http_code:
-          response.status,
-
-        endpoint,
-
-        final_url:
-          finalUrl,
-
-        content_type:
-          contentType,
-
-        elapsed_ms:
-          elapsed,
-
-        error:
-          "Alpha respondió HTTP 200 pero Content-Type es text/html en lugar de JSON.",
-
-        response_length:
-          text.length,
-
-        response_preview:
-          text.slice(0, 2000),
-
-        response_start:
-          text.slice(0, 500),
-
-        response_end:
-          text.slice(
-            Math.max(
-              0,
-              text.length - 500
-            )
-          ),
-
-        location,
-
-        server,
-
-        cf_ray:
-          cfRay,
-
-        cf_cache_status:
-          cfCacheStatus,
-
-        content_length:
-          contentLength,
-
-        looks_like_cloudflare:
-          /cloudflare|cf-chl|challenge-platform|just a moment/i.test(
-            text
-          ),
-
-        looks_like_login:
-          /login|sign in|iniciar sesión|iniciar sesion/i.test(
-            text
-          ),
-
-        looks_like_error_page:
-          /error|forbidden|access denied|not found|unauthorized/i.test(
-            text
-          ),
-
-        links: [],
-
-        diagnostics: null
-      };
-    }
 
     /*
     |--------------------------------------------------------------------------
@@ -795,1260 +773,1287 @@ async function fetchAlpha(
 
     let data;
 
+
     try {
-      data =
-        JSON.parse(text);
-    } catch {
-      return {
+
+        data =
+            await response.json();
+
+    } catch (error) {
+
+        console.error(
+            "Alpha JSON error:",
+            error
+        );
+
+        return {
+
+            success: false,
+
+            status:
+                "invalid_json",
+
+            links: [],
+
+            error:
+                "Alpha devolvió una respuesta que no es JSON."
+        };
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | PRIORIDAD 1
+    |
+    | all_embeds
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        data?.all_embeds &&
+        typeof data.all_embeds ===
+            "object" &&
+        !Array.isArray(
+            data.all_embeds
+        )
+    ) {
+
+        const links =
+            extractAllEmbeds(
+                data.all_embeds
+            );
+
+
+        if (links.length > 0) {
+
+            return {
+
+                success: true,
+
+                status:
+                    "links_found",
+
+                mode:
+                    "all_embeds",
+
+                links
+            };
+        }
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | PRIORIDAD 2
+    |
+    | embeds
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        data?.embeds &&
+        typeof data.embeds ===
+            "object" &&
+        !Array.isArray(
+            data.embeds
+        )
+    ) {
+
+        const fallbackLanguage =
+            normalizeLanguage(
+                data.language ||
+                "latino"
+            );
+
+
+        const links =
+            extractEmbedsFallback(
+                data.embeds,
+                fallbackLanguage
+            );
+
+
+        if (links.length > 0) {
+
+            return {
+
+                success: true,
+
+                status:
+                    "links_found",
+
+                mode:
+                    "embeds_fallback",
+
+                links
+            };
+        }
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | NADA
+    |--------------------------------------------------------------------------
+    */
+
+    return {
+
         success: false,
-        source: ALPHA_NAME,
 
-        http_code:
-          response.status,
-
-        endpoint,
-
-        final_url:
-          finalUrl,
-
-        content_type:
-          contentType,
-
-        elapsed_ms:
-          elapsed,
-
-        error:
-          "Alpha devolvió una respuesta que no es JSON.",
-
-        response_length:
-          text.length,
-
-        response_preview:
-          text.slice(0, 2000),
-
-        location,
-        server,
-
-        cf_ray:
-          cfRay,
-
-        cf_cache_status:
-          cfCacheStatus,
+        status:
+            "no_embeds",
 
         links: [],
-        diagnostics: null
-      };
+
+        error:
+            "Alpha no devolvió enlaces válidos."
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| EXTRAER ALL_EMBEDS
+|--------------------------------------------------------------------------
+*/
+
+function extractAllEmbeds(
+    allEmbeds
+) {
+
+    const result = [];
+
+
+    for (
+        const [
+            languageKey,
+            servers
+        ]
+        of Object.entries(
+            allEmbeds
+        )
+    ) {
+
+        if (
+            !servers ||
+            typeof servers !==
+                "object" ||
+            Array.isArray(
+                servers
+            )
+        ) {
+
+            continue;
+        }
+
+
+        const idioma =
+            normalizeLanguage(
+                languageKey
+            );
+
+
+        for (
+            const [
+                serverName,
+                urls
+            ]
+            of Object.entries(
+                servers
+            )
+        ) {
+
+            if (
+                isBlacklisted(
+                    serverName
+                )
+            ) {
+
+                continue;
+            }
+
+
+            const servidor =
+                normalizeServerName(
+                    serverName
+                );
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | ARRAY
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                Array.isArray(
+                    urls
+                )
+            ) {
+
+                for (
+                    const url
+                    of urls
+                ) {
+
+                    if (
+                        !isHttpUrl(
+                            url
+                        )
+                    ) {
+
+                        continue;
+                    }
+
+
+                    result.push({
+
+                        url_embed:
+                            url,
+
+                        servidor,
+
+                        idioma
+                    });
+                }
+
+
+                continue;
+            }
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | STRING
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                typeof urls ===
+                    "string" &&
+                isHttpUrl(
+                    urls
+                )
+            ) {
+
+                result.push({
+
+                    url_embed:
+                        urls,
+
+                    servidor,
+
+                    idioma
+                });
+            }
+        }
     }
+
+
+    return deduplicateLinks(
+        result
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| FALLBACK EMBEDS
+|--------------------------------------------------------------------------
+*/
+
+function extractEmbedsFallback(
+    embeds,
+    idioma
+) {
+
+    const result = [];
+
+
+    for (
+        const [
+            serverName,
+            urls
+        ]
+        of Object.entries(
+            embeds
+        )
+    ) {
+
+        if (
+            isBlacklisted(
+                serverName
+            )
+        ) {
+
+            continue;
+        }
+
+
+        const servidor =
+            normalizeServerName(
+                serverName
+            );
+
+
+        if (
+            Array.isArray(
+                urls
+            )
+        ) {
+
+            for (
+                const url
+                of urls
+            ) {
+
+                if (
+                    !isHttpUrl(
+                        url
+                    )
+                ) {
+
+                    continue;
+                }
+
+
+                result.push({
+
+                    url_embed:
+                        url,
+
+                    servidor,
+
+                    idioma
+                });
+            }
+
+
+            continue;
+        }
+
+
+        if (
+            typeof urls ===
+                "string" &&
+            isHttpUrl(
+                urls
+            )
+        ) {
+
+            result.push({
+
+                url_embed:
+                    urls,
+
+                servidor,
+
+                idioma
+            });
+        }
+    }
+
+
+    return deduplicateLinks(
+        result
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| BETA — SUPABASE + KV
+|--------------------------------------------------------------------------
+*/
+
+async function getBeta({
+    env,
+    tmdbId,
+    type,
+    season,
+    episode,
+    force
+}) {
+
+    const cacheKey =
+        buildBetaCacheKey(
+            type,
+            tmdbId,
+            season,
+            episode
+        );
+
 
     /*
     |--------------------------------------------------------------------------
-    | PROCESAR JSON
+    | CACHE HIT
     |--------------------------------------------------------------------------
     */
 
-    const extracted =
-      extractAlphaLinks(data);
-
-    return {
-      success: true,
-
-      source:
-        ALPHA_NAME,
-
-      http_code:
-        response.status,
-
-      content_type:
-        contentType,
-
-      elapsed_ms:
-        elapsed,
-
-      endpoint,
-
-      final_url:
-        finalUrl,
-
-      links:
-        extracted.links,
-
-      diagnostics:
-        extracted.diagnostics,
-
-      raw_keys:
-        extracted.diagnostics.raw_keys,
-
-      response_length:
-        text.length
-    };
-
-  } catch (error) {
-    return {
-      success: false,
-
-      source:
-        ALPHA_NAME,
-
-      http_code: 0,
-
-      endpoint,
-
-      elapsed_ms:
-        Date.now() - started,
-
-      error:
-        error?.message ||
-        String(error),
-
-      links: [],
-
-      diagnostics: null
-    };
-  }
-}
-
-/*
-|--------------------------------------------------------------------------
-| BETA - URL
-|--------------------------------------------------------------------------
-*/
-
-function buildBetaUrl(
-  betaUrl,
-  tmdbId,
-  type,
-  season,
-  episode
-) {
-  let base =
-    String(betaUrl || "")
-      .trim()
-      .replace(/\/+$/, "");
-
-  if (
-    base.endsWith(
-      "/rest/v1/enlaces"
-    )
-  ) {
-    // Ya está completo.
-  } else if (
-    base.endsWith(
-      "/rest/v1"
-    )
-  ) {
-    base +=
-      "/enlaces";
-  } else {
-    base +=
-      "/rest/v1/enlaces";
-  }
-
-  const url =
-    new URL(base);
-
-  url.searchParams.set(
-    "tmdb_id",
-    `eq.${tmdbId}`
-  );
-
-  url.searchParams.set(
-    "tipo",
-    `eq.${type}`
-  );
-
-  url.searchParams.set(
-    "temporada",
-    `eq.${season}`
-  );
-
-  url.searchParams.set(
-    "episodio",
-    `eq.${episode}`
-  );
-
-  return url.toString();
-}
-
-/*
-|--------------------------------------------------------------------------
-| BETA - FETCH
-|--------------------------------------------------------------------------
-*/
-
-async function fetchBeta(
-  betaUrl,
-  betaSupabaseKey,
-  tmdbId,
-  type,
-  season,
-  episode
-) {
-  if (!betaUrl) {
-    return {
-      success: false,
-      source: BETA_NAME,
-      http_code: 0,
-      endpoint: null,
-      error:
-        "El Secret BETA_URL no está configurado.",
-      links: []
-    };
-  }
-
-  if (!betaSupabaseKey) {
-    return {
-      success: false,
-      source: BETA_NAME,
-      http_code: 0,
-      endpoint: null,
-      error:
-        "El Secret BETA_SUPABASE_KEY no está configurado.",
-      links: []
-    };
-  }
-
-  let endpoint;
-
-  try {
-    endpoint =
-      buildBetaUrl(
-        betaUrl,
-        tmdbId,
-        type,
-        season,
-        episode
-      );
-  } catch (error) {
-    return {
-      success: false,
-      source: BETA_NAME,
-      http_code: 0,
-      endpoint: null,
-      error:
-        `BETA_URL inválida: ${
-          error?.message ||
-          String(error)
-        }`,
-      links: []
-    };
-  }
-
-  try {
-    const response =
-      await fetch(
-        endpoint,
-        {
-          method: "GET",
-
-          headers: {
-            "apikey":
-              betaSupabaseKey,
-
-            "Authorization":
-              `Bearer ${betaSupabaseKey}`,
-
-            "Accept":
-              "application/json",
-
-            "User-Agent":
-              "TON-Scraper-Worker/1.0"
-          }
-        }
-      );
-
-    const httpCode =
-      response.status;
-
-    const contentType =
-      response.headers.get(
-        "content-type"
-      ) || "";
-
-    const contentRange =
-      response.headers.get(
-        "content-range"
-      ) || "";
-
-    const text =
-      await response.text();
-
-    if (!response.ok) {
-      let errorData = null;
-
-      try {
-        errorData =
-          JSON.parse(text);
-      } catch {}
-
-      return {
-        success: false,
-        source: BETA_NAME,
-        http_code:
-          httpCode,
-        content_type:
-          contentType,
-        content_range:
-          contentRange,
-        endpoint,
-
-        error:
-          errorData?.message ||
-          errorData?.error ||
-          errorData?.hint ||
-          `HTTP ${httpCode}`,
-
-        response_preview:
-          text.slice(0, 1000),
-
-        links: []
-      };
-    }
-
-    let data;
-
-    try {
-      data =
-        JSON.parse(text);
-    } catch {
-      return {
-        success: false,
-        source: BETA_NAME,
-        http_code:
-          httpCode,
-        content_type:
-          contentType,
-        content_range:
-          contentRange,
-        endpoint,
-
-        error:
-          "Beta respondió HTTP 200 pero el cuerpo no es JSON.",
-
-        response_preview:
-          text.slice(0, 1000),
-
-        links: []
-      };
-    }
-
-    if (!Array.isArray(data)) {
-      return {
-        success: false,
-        source: BETA_NAME,
-        http_code:
-          httpCode,
-        content_type:
-          contentType,
-        content_range:
-          contentRange,
-        endpoint,
-
-        error:
-          "Beta devolvió JSON pero no un array.",
-
-        response_preview:
-          JSON.stringify(data)
-            .slice(0, 1000),
-
-        links: []
-      };
-    }
-
-    const links = [];
-    const seen = new Set();
-
-    for (const item of data) {
-      if (
-        !item ||
-        typeof item !== "object"
-      ) {
-        continue;
-      }
-
-      const url =
-        String(
-          item.url_embed ||
-          ""
-        ).trim();
-
-      if (
-        !url ||
-        !/^https?:\/\//i.test(url)
-      ) {
-        continue;
-      }
-
-      const servidor =
-        String(
-          item.servidor ||
-          "Desconocido"
-        ).trim();
-
-      if (
-        isBlacklistedServer(
-          servidor
-        )
-      ) {
-        continue;
-      }
-
-      const idioma =
-        normalizeLanguage(
-          item.idioma
-        );
-
-      const key =
-        `${url}|${idioma}`;
-
-      if (seen.has(key)) {
-        continue;
-      }
-
-      seen.add(key);
-
-      links.push({
-        url_embed: url,
-        servidor,
-        idioma
-      });
-    }
-
-    return {
-      success: true,
-      source: BETA_NAME,
-      http_code:
-        httpCode,
-      content_type:
-        contentType,
-      content_range:
-        contentRange,
-      endpoint,
-
-      rows_received:
-        data.length,
-
-      links
-    };
-
-  } catch (error) {
-    return {
-      success: false,
-      source: BETA_NAME,
-      http_code: 0,
-      endpoint,
-      error:
-        error?.message ||
-        String(error),
-      links: []
-    };
-  }
-}
-
-/*
-|--------------------------------------------------------------------------
-| MERGE
-|--------------------------------------------------------------------------
-*/
-
-function mergeLinks(
-  alphaLinks,
-  betaLinks,
-  betaFirst
-) {
-  const result = [];
-  const seen = new Set();
-
-  const ordered =
-    betaFirst
-      ? [
-          ...betaLinks,
-          ...alphaLinks
-        ]
-      : [
-          ...alphaLinks,
-          ...betaLinks
-        ];
-
-  for (const link of ordered) {
     if (
-      !link ||
-      !link.url_embed
+        env.BETA_CACHE &&
+        !force
     ) {
-      continue;
-    }
 
-    if (
-      isBlacklistedServer(
-        link.servidor
-      )
-    ) {
-      continue;
-    }
+        try {
 
-    const key =
-      `${link.url_embed}|${link.idioma}`;
+            const cached =
+                await env.BETA_CACHE.get(
+                    cacheKey,
+                    {
+                        type:
+                            "json"
+                    }
+                );
 
-    if (seen.has(key)) {
-      continue;
-    }
 
-    seen.add(key);
+            if (
+                Array.isArray(
+                    cached
+                ) &&
+                cached.length > 0
+            ) {
 
-    result.push(link);
-  }
+                return {
 
-  return result;
-}
+                    success: true,
 
-/*
-|--------------------------------------------------------------------------
-| SSE
-|--------------------------------------------------------------------------
-*/
+                    status:
+                        "beta_cache_hit",
 
-function createSSEStream(
-  handler
-) {
-  const encoder =
-    new TextEncoder();
+                    cache:
+                        "HIT",
 
-  const stream =
-    new ReadableStream({
-      start(controller) {
-
-        const send =
-          (event, data) => {
-            controller.enqueue(
-              encoder.encode(
-                `event: ${event}\n` +
-                `data: ${JSON.stringify(data)}\n\n`
-              )
-            );
-          };
-
-        Promise.resolve()
-          .then(
-            () => handler(send)
-          )
-          .then(
-            () => {
-              try {
-                controller.close();
-              } catch {}
+                    links:
+                        cached
+                };
             }
-          )
-          .catch(error => {
-            send(
-              "error",
-              {
-                success: false,
-                status:
-                  "worker_error",
-                message:
-                  error?.message ||
-                  String(error)
-              }
+
+        } catch (error) {
+
+            console.error(
+                "Beta KV read error:",
+                error
             );
+        }
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | CACHE MISS
+    |--------------------------------------------------------------------------
+    */
+
+    /*
+    | El Worker no convierte esto
+    | en un evento SSE por sí mismo.
+    |
+    | El estado queda disponible para
+    | el resultado de diagnóstico.
+    |--------------------------------------------------------------------------
+    */
+
+    const beta =
+        await querySupabaseBeta({
+            env,
+            tmdbId,
+            type,
+            season,
+            episode
+        });
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Si encontró enlaces
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        beta.success &&
+        beta.links.length > 0
+    ) {
+
+        /*
+        |--------------------------------------------------------------------------
+        | Guardar en KV durante 6 horas
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            env.BETA_CACHE
+        ) {
 
             try {
-              controller.close();
-            } catch {}
-          });
-      }
-    });
 
-  return stream;
+                await env.BETA_CACHE.put(
+                    cacheKey,
+                    JSON.stringify(
+                        beta.links
+                    ),
+                    {
+                        expirationTtl:
+                            BETA_CACHE_TTL
+                    }
+                );
+
+            } catch (error) {
+
+                console.error(
+                    "Beta KV write error:",
+                    error
+                );
+            }
+        }
+
+
+        return {
+
+            success: true,
+
+            status:
+                "links_found",
+
+            cache:
+                "MISS",
+
+            cache_status:
+                "beta_cache_miss",
+
+            links:
+                beta.links
+        };
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | No guardar resultados vacíos
+    |--------------------------------------------------------------------------
+    */
+
+    return {
+
+        ...beta,
+
+        cache:
+            "MISS",
+
+        cache_status:
+            "beta_cache_miss"
+    };
 }
+
 
 /*
 |--------------------------------------------------------------------------
-| WORKER
+| CONSULTAR SUPABASE
 |--------------------------------------------------------------------------
 */
 
-export default {
-  async fetch(
-    request,
-    env
-  ) {
-    const url =
-      new URL(
-        request.url
-      );
-
-    /*
-    |--------------------------------------------------------------------------
-    | OPTIONS
-    |--------------------------------------------------------------------------
-    */
+async function querySupabaseBeta({
+    env,
+    tmdbId,
+    type,
+    season,
+    episode
+}) {
 
     if (
-      request.method ===
-      "OPTIONS"
+        !env.SUPABASE_URL ||
+        !env.SUPABASE_SERVICE_KEY
     ) {
-      return new Response(
-        null,
-        {
-          status: 204,
-          headers:
-            JSON_HEADERS
-        }
-      );
-    }
 
-    /*
-    |--------------------------------------------------------------------------
-    | GET
-    |--------------------------------------------------------------------------
-    */
+        console.error(
+            "Supabase no está configurado."
+        );
 
-    if (
-      request.method !==
-      "GET"
-    ) {
-      return json(
-        {
-          success: false,
-          status:
-            "method_not_allowed"
-        },
-        405
-      );
-    }
+        return {
 
-    /*
-    |--------------------------------------------------------------------------
-    | HEALTH
-    |--------------------------------------------------------------------------
-    */
-
-    if (
-      url.pathname === "/"
-    ) {
-      return json({
-        success: true,
-        status: "online",
-        event: "complete",
-        worker:
-          "TON Scraper API"
-      });
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | API KEY
-    |--------------------------------------------------------------------------
-    */
-
-    const apiKey =
-      env.API_KEY || "";
-
-    if (apiKey) {
-      const authorization =
-        request.headers.get(
-          "Authorization"
-        ) || "";
-
-      const suppliedKey =
-        authorization.startsWith(
-          "Bearer "
-        )
-          ? authorization
-              .slice(7)
-              .trim()
-          : url.searchParams.get(
-              "key"
-            );
-
-      if (
-        suppliedKey !==
-        apiKey
-      ) {
-        return json(
-          {
             success: false,
+
             status:
-              "unauthorized",
-            event:
-              "complete",
-            message:
-              "API key inválida o ausente."
-          },
-          401
-        );
-      }
-    }
+                "beta_not_configured",
 
-    /*
-    |--------------------------------------------------------------------------
-    | RUTA
-    |--------------------------------------------------------------------------
-    |
-    | /play/movie/44956
-    |
-    | /play/tv/1399/1/1
-    |--------------------------------------------------------------------------
-    */
-
-    const parts =
-      url.pathname
-        .split("/")
-        .filter(Boolean);
-
-    if (
-      parts[0] !== "play"
-    ) {
-      return json(
-        {
-          success: false,
-          status:
-            "not_found",
-          event:
-            "complete"
-        },
-        404
-      );
-    }
-
-    const type =
-      parts[1];
-
-    if (
-      type !== "movie" &&
-      type !== "tv"
-    ) {
-      return json(
-        {
-          success: false,
-          status:
-            "invalid_type",
-          event:
-            "complete"
-        },
-        400
-      );
-    }
-
-    const tmdbId =
-      parts[2];
-
-    if (!tmdbId) {
-      return json(
-        {
-          success: false,
-          status:
-            "missing_tmdb_id",
-          event:
-            "complete"
-        },
-        400
-      );
-    }
-
-    let season = 0;
-    let episode = 0;
-
-    if (
-      type === "tv"
-    ) {
-      season =
-        Number(
-          parts[3] || 0
-        );
-
-      episode =
-        Number(
-          parts[4] || 0
-        );
-
-      if (
-        !season ||
-        !episode
-      ) {
-        return json(
-          {
-            success: false,
-            status:
-              "invalid_episode",
-            event:
-              "complete"
-          },
-          400
-        );
-      }
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | SSE
-    |--------------------------------------------------------------------------
-    */
-
-    const stream =
-      createSSEStream(
-        async send => {
-
-          /*
-          |--------------------------------------------------------------------------
-          | TMDB
-          |--------------------------------------------------------------------------
-          */
-
-          send(
-            "tmdb_receiving",
-            {
-              success: true,
-              status:
-                "tmdb_receiving",
-              message:
-                "Recibiendo datos de TMDB",
-              tmdb_id:
-                String(tmdbId),
-              type,
-              season,
-              episode
-            }
-          );
-
-          send(
-            "tmdb_received",
-            {
-              success: true,
-              status:
-                "tmdb_received",
-              message:
-                "Datos de TMDB recibidos",
-              tmdb_id:
-                String(tmdbId),
-              type,
-              season,
-              episode
-            }
-          );
-
-          /*
-          |--------------------------------------------------------------------------
-          | BUSCANDO
-          |--------------------------------------------------------------------------
-          */
-
-          send(
-            "searching",
-            {
-              success: true,
-              status:
-                "searching",
-              message:
-                "Buscando servidores"
-            }
-          );
-
-          /*
-          |--------------------------------------------------------------------------
-          | ALPHA
-          |--------------------------------------------------------------------------
-          */
-
-          send(
-            "alpha_search",
-            {
-              success: true,
-              status:
-                "searching_alpha",
-              source:
-                ALPHA_NAME,
-              message:
-                "Consultando Alpha"
-            }
-          );
-
-          const alpha =
-            await fetchAlpha(
-              env.SOURCE_URL,
-              tmdbId,
-              type,
-              season,
-              episode
-            );
-
-          const alphaFound =
-            alpha.links.length;
-
-          send(
-            "alpha_found",
-            {
-              success:
-                alpha.success,
-
-              status:
-                alpha.success
-                  ? "alpha_found"
-                  : "alpha_unavailable",
-
-              source:
-                ALPHA_NAME,
-
-              found:
-                alphaFound,
-
-              message:
-                alpha.success
-                  ? `Alpha: ${alphaFound} servidor${
-                      alphaFound === 1
-                        ? ""
-                        : "es"
-                    } encontrado${
-                      alphaFound === 1
-                        ? ""
-                        : "s"
-                    }`
-                  : "Alpha no respondió o no encontró servidores",
-
-              http_code:
-                alpha.http_code,
-
-              content_type:
-                alpha.content_type ||
-                null,
-
-              elapsed_ms:
-                alpha.elapsed_ms ||
-                null,
-
-              endpoint:
-                alpha.endpoint ||
-                null,
-
-              final_url:
-                alpha.final_url ||
-                null,
-
-              response_length:
-                alpha.response_length ??
-                null,
-
-              response_preview:
-                alpha.response_preview ||
-                null,
-
-              response_start:
-                alpha.response_start ||
-                null,
-
-              response_end:
-                alpha.response_end ||
-                null,
-
-              location:
-                alpha.location ||
-                null,
-
-              server:
-                alpha.server ||
-                null,
-
-              cf_ray:
-                alpha.cf_ray ||
-                null,
-
-              cf_cache_status:
-                alpha.cf_cache_status ||
-                null,
-
-              content_length:
-                alpha.content_length ||
-                null,
-
-              looks_like_cloudflare:
-                alpha.looks_like_cloudflare ??
-                false,
-
-              looks_like_login:
-                alpha.looks_like_login ??
-                false,
-
-              looks_like_error_page:
-                alpha.looks_like_error_page ??
-                false,
-
-              raw_keys:
-                alpha.raw_keys ||
-                [],
-
-              parser:
-                alpha.diagnostics
-                  ?.parser ||
-                null,
-
-              all_embeds_languages:
-                alpha.diagnostics
-                  ?.all_embeds_languages ||
-                [],
-
-              all_embeds_urls:
-                alpha.diagnostics
-                  ?.all_embeds_urls ||
-                0,
-
-              all_embeds_valid:
-                alpha.diagnostics
-                  ?.all_embeds_valid ||
-                0,
-
-              all_embeds_discarded:
-                alpha.diagnostics
-                  ?.all_embeds_discarded ||
-                0,
-
-              embeds_urls:
-                alpha.diagnostics
-                  ?.embeds_urls ||
-                0,
-
-              embeds_valid:
-                alpha.diagnostics
-                  ?.embeds_valid ||
-                0,
-
-              embeds_discarded:
-                alpha.diagnostics
-                  ?.embeds_discarded ||
-                0,
-
-              error:
-                alpha.error ||
-                null
-            }
-          );
-
-          /*
-          |--------------------------------------------------------------------------
-          | BETA
-          |--------------------------------------------------------------------------
-          |
-          | Si Alpha no responde o tiene 4 o menos,
-          | se consulta Beta.
-          |--------------------------------------------------------------------------
-          */
-
-          const shouldUseBeta =
-            !alpha.success ||
-            alphaFound <= 4;
-
-          let beta = {
-            success: false,
-            source:
-              BETA_NAME,
             links: [],
-            endpoint: null,
-            error: null,
-            http_code: 0
-          };
 
-          if (
-            shouldUseBeta
-          ) {
+            error:
+                "SUPABASE_URL o SUPABASE_SERVICE_KEY no está configurado."
+        };
+    }
 
-            send(
-              "beta_search",
-              {
-                success: true,
-                status:
-                  "searching_beta",
-                source:
-                  BETA_NAME,
-                message:
-                  "Consultando Beta"
-              }
+
+    const baseUrl =
+        env.SUPABASE_URL
+            .replace(
+                /\/+$/,
+                ""
             );
 
-            beta =
-              await fetchBeta(
-                env.BETA_URL,
-                env.BETA_SUPABASE_KEY,
-                tmdbId,
-                type,
-                season,
-                episode
-              );
 
-            const betaFound =
-              beta.links.length;
+    const params =
+        new URLSearchParams();
 
-            send(
-              "beta_found",
-              {
-                success:
-                  beta.success,
 
-                status:
-                  beta.success
-                    ? "beta_found"
-                    : "beta_unavailable",
+    params.set(
+        "select",
+        "tmdb_id,tipo,url_embed,servidor,idioma,temporada,episodio"
+    );
 
-                source:
-                  BETA_NAME,
 
-                found:
-                  betaFound,
+    params.set(
+        "tmdb_id",
+        `eq.${tmdbId}`
+    );
 
-                message:
-                  beta.success
-                    ? `Beta: ${betaFound} servidor${
-                        betaFound === 1
-                          ? ""
-                          : "es"
-                      } encontrado${
-                        betaFound === 1
-                          ? ""
-                          : "s"
-                      }`
-                    : "Beta no respondió o no encontró servidores",
 
-                http_code:
-                  beta.http_code,
+    params.set(
+        "tipo",
+        `eq.${type}`
+    );
 
-                content_type:
-                  beta.content_type ||
-                  null,
 
-                content_range:
-                  beta.content_range ||
-                  null,
+    if (
+        type === "tv"
+    ) {
 
-                rows_received:
-                  beta.rows_received ??
-                  0,
+        params.set(
+            "temporada",
+            `eq.${season}`
+        );
 
-                endpoint:
-                  beta.endpoint ||
-                  null,
+        params.set(
+            "episodio",
+            `eq.${episode}`
+        );
 
-                error:
-                  beta.error ||
-                  null,
+    } else {
 
-                response_preview:
-                  beta.response_preview ||
-                  null
-              }
+        params.set(
+            "temporada",
+            "eq.0"
+        );
+
+        params.set(
+            "episodio",
+            "eq.0"
+        );
+    }
+
+
+    const endpoint =
+        `${baseUrl}/rest/v1/enlaces?${params.toString()}`;
+
+
+    let response;
+
+
+    try {
+
+        response =
+            await fetch(
+                endpoint,
+                {
+
+                    method:
+                        "GET",
+
+                    headers: {
+
+                        "apikey":
+                            env.SUPABASE_SERVICE_KEY,
+
+                        "Authorization":
+                            `Bearer ${env.SUPABASE_SERVICE_KEY}`,
+
+                        "Accept":
+                            "application/json"
+                    }
+                }
             );
 
-          } else {
+    } catch (error) {
 
-            send(
-              "beta_skipped",
-              {
-                success: true,
-                status:
-                  "beta_skipped",
-                source:
-                  BETA_NAME,
-                reason:
-                  "Alpha encontró más de 4 servidores válidos.",
-                alpha_found:
-                  alphaFound
-              }
-            );
-          }
+        console.error(
+            "Beta request error:",
+            error
+        );
 
-          /*
-          |--------------------------------------------------------------------------
-          | COMBINAR
-          |--------------------------------------------------------------------------
-          */
+        return {
 
-          const alphaLinks =
-            alpha.links || [];
+            success: false,
 
-          const betaLinks =
-            beta.links || [];
+            status:
+                "request_error",
 
-          const betaFirst =
-            alphaLinks.length <= 4;
+            links: [],
 
-          const links =
-            mergeLinks(
-              alphaLinks,
-              betaLinks,
-              betaFirst
-            );
+            error:
+                error instanceof Error
+                    ? error.message
+                    : String(error)
+        };
+    }
 
-          /*
-          |--------------------------------------------------------------------------
-          | COMPLETE
-          |--------------------------------------------------------------------------
-          */
 
-          const success =
-            links.length > 0;
+    /*
+    |--------------------------------------------------------------------------
+    | HTTP
+    |--------------------------------------------------------------------------
+    */
 
-          send(
-            "complete",
-            {
-              success,
+    if (!response.ok) {
 
-              status:
-                success
-                  ? "complete"
-                  : "source_unavailable",
+        let detail = "";
 
-              event:
-                "complete",
+        try {
 
-              source:
-                ALPHA_NAME,
+            detail =
+                await response.text();
 
-              fallback:
-                BETA_NAME,
-
-              tmdb_id:
-                String(tmdbId),
-
-              type,
-
-              season,
-
-              episode,
-
-              alpha_found:
-                alphaLinks.length,
-
-              beta_found:
-                betaLinks.length,
-
-              found:
-                links.length,
-
-              beta_first:
-                betaFirst,
-
-              links,
-
-              message:
-                success
-                  ? "Búsqueda completada"
-                  : "Alpha y Beta no devolvieron servidores válidos.",
-
-              alpha_error:
-                alpha.error ||
-                null,
-
-              beta_error:
-                beta.error ||
-                null
-            }
-          );
+        } catch {
+            detail = "";
         }
-      );
+
+
+        console.error(
+            "Beta HTTP:",
+            response.status,
+            detail
+        );
+
+
+        return {
+
+            success: false,
+
+            status:
+                "http_error",
+
+            http:
+                response.status,
+
+            links: [],
+
+            error:
+                `Beta respondió HTTP ${response.status}`,
+
+            detail
+        };
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | JSON
+    |--------------------------------------------------------------------------
+    */
+
+    let rows;
+
+
+    try {
+
+        rows =
+            await response.json();
+
+    } catch (error) {
+
+        return {
+
+            success: false,
+
+            status:
+                "invalid_json",
+
+            links: [],
+
+            error:
+                "Beta devolvió una respuesta no JSON."
+        };
+    }
+
+
+    if (
+        !Array.isArray(
+            rows
+        )
+    ) {
+
+        return {
+
+            success: false,
+
+            status:
+                "invalid_response",
+
+            links: [],
+
+            error:
+                "Beta no devolvió un array."
+        };
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | PROCESAR ENLACES
+    |--------------------------------------------------------------------------
+    */
+
+    const links =
+        rows
+
+            .filter(
+                row =>
+                    row &&
+                    typeof row.url_embed ===
+                        "string" &&
+                    isHttpUrl(
+                        row.url_embed
+                    )
+            )
+
+            .filter(
+                row =>
+                    !isBlacklisted(
+                        row.servidor
+                    )
+            )
+
+            .map(
+                row => ({
+
+                    url_embed:
+                        row.url_embed,
+
+                    servidor:
+                        normalizeServerName(
+                            row.servidor ||
+                            "Desconocido"
+                        ),
+
+                    idioma:
+                        normalizeLanguage(
+                            row.idioma ||
+                            "Desconocido"
+                        )
+                })
+            );
+
+
+    const uniqueLinks =
+        deduplicateLinks(
+            links
+        );
+
+
+    return {
+
+        success:
+            uniqueLinks.length > 0,
+
+        status:
+            uniqueLinks.length > 0
+                ? "links_found"
+                : "no_links",
+
+        links:
+            uniqueLinks
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| DEDUPLICAR
+|--------------------------------------------------------------------------
+*/
+
+function deduplicateLinks(
+    links
+) {
+
+    const unique =
+        new Map();
+
+
+    for (
+        const link
+        of links
+    ) {
+
+        const key =
+            `${link.idioma}|${link.url_embed}`;
+
+
+        if (
+            !unique.has(
+                key
+            )
+        ) {
+
+            unique.set(
+                key,
+                link
+            );
+        }
+    }
+
+
+    return Array.from(
+        unique.values()
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| NORMALIZAR IDIOMAS
+|--------------------------------------------------------------------------
+*/
+
+function normalizeLanguage(
+    language
+) {
+
+    const value =
+        String(
+            language ||
+            ""
+        )
+            .trim()
+            .toLowerCase();
+
+
+    const map = {
+
+        latino:
+            "Latino",
+
+        latam:
+            "Latino",
+
+        latin:
+            "Latino",
+
+        "español latino":
+            "Latino",
+
+        "espanol latino":
+            "Latino",
+
+        castellano:
+            "Castellano",
+
+        español:
+            "Castellano",
+
+        espanol:
+            "Castellano",
+
+        subtitulado:
+            "Subtitulado",
+
+        subtitulos:
+            "Subtitulado",
+
+        subtítulo:
+            "Subtitulado",
+
+        subtitulo:
+            "Subtitulado",
+
+        subtitle:
+            "Subtitulado",
+
+        sub:
+            "Subtitulado"
+    };
+
+
+    if (
+        map[value]
+    ) {
+
+        return map[value];
+    }
+
+
+    return capitalize(
+        value
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| NORMALIZAR SERVIDOR
+|--------------------------------------------------------------------------
+*/
+
+function normalizeServerName(
+    server
+) {
+
+    const value =
+        String(
+            server ||
+            ""
+        )
+            .trim()
+            .toLowerCase();
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Elimina sufijos:
+    |
+    | streamwish_2
+    | filelions_3
+    | powvideo_8
+    |--------------------------------------------------------------------------
+    */
+
+    const base =
+        value.replace(
+            /_\d+$/,
+            ""
+        );
+
+
+    const map = {
+
+        streamwish:
+            "Streamwish",
+
+        filelions:
+            "Filelions",
+
+        voe:
+            "Voe",
+
+        doodstream:
+            "Doodstream",
+
+        primeload:
+            "Primeload",
+
+        mixdrop:
+            "Mixdrop",
+
+        filemoon:
+            "Filemoon",
+
+        powvideo:
+            "Powvideo",
+
+        streamplay:
+            "Streamplay",
+
+        streamtape:
+            "Streamtape",
+
+        vidmoly:
+            "Vidmoly",
+
+        vimeos:
+            "Vimeos",
+
+        ok:
+            "OK",
+
+        abyss:
+            "Abyss"
+    };
+
+
+    if (
+        map[base]
+    ) {
+
+        return map[base];
+    }
+
+
+    return capitalize(
+        base
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| BLACKLIST
+|--------------------------------------------------------------------------
+*/
+
+function isBlacklisted(
+    server
+) {
+
+    const normalized =
+        String(
+            server ||
+            ""
+        )
+            .toLowerCase()
+            .replace(
+                /[\s_-]+/g,
+                ""
+            );
+
+
+    return BLACKLIST.some(
+        blocked =>
+            normalized.includes(
+                blocked
+            )
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| URL HTTP
+|--------------------------------------------------------------------------
+*/
+
+function isHttpUrl(
+    value
+) {
+
+    return (
+
+        typeof value ===
+            "string" &&
+
+        /^https?:\/\//i.test(
+            value
+        )
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| CAPITALIZAR
+|--------------------------------------------------------------------------
+*/
+
+function capitalize(
+    value
+) {
+
+    if (!value) {
+
+        return "Desconocido";
+    }
+
+
+    return (
+        value.charAt(0).toUpperCase() +
+        value.slice(1)
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| BOOLEAN
+|--------------------------------------------------------------------------
+*/
+
+function isTrue(
+    value
+) {
+
+    if (!value) {
+        return false;
+    }
+
+
+    return [
+
+        "1",
+        "true",
+        "yes",
+        "on",
+        "force"
+
+    ].includes(
+
+        String(value)
+            .toLowerCase()
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| JSON RESPONSE
+|--------------------------------------------------------------------------
+*/
+
+function jsonResponse(
+    data,
+    status = 200
+) {
+
+    const headers =
+        new Headers();
+
+
+    headers.set(
+        "Content-Type",
+        "application/json; charset=UTF-8"
+    );
+
+
+    for (
+        const [
+            key,
+            value
+        ]
+        of Object.entries(
+            CORS_HEADERS
+        )
+    ) {
+
+        headers.set(
+            key,
+            value
+        );
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | No cachear la respuesta del Worker.
+    |
+    | La caché de Beta vive en KV.
+    |--------------------------------------------------------------------------
+    */
+
+    headers.set(
+        "Cache-Control",
+        "no-store, no-cache, must-revalidate"
+    );
+
 
     return new Response(
-      stream,
-      {
-        status: 200,
-        headers:
-          SSE_HEADERS
-      }
+
+        JSON.stringify(
+            data,
+            null,
+            2
+        ),
+
+        {
+            status,
+            headers
+        }
     );
-  }
-};
+}
