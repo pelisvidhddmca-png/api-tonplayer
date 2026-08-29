@@ -2,7 +2,7 @@
  * CONTENT WORKER
  *
  * Alpha = Supabase (solo lectura con ANON KEY)
- * Beta  = scraper (solo bajo ?fallback=beta)
+ * Beta  = scraper (automático si Alpha queda sin enlaces, o ?fallback=beta)
  *
  * KV:
  *   ALPHA_KV -> Alpha, TTL 6h
@@ -144,9 +144,8 @@ async function processContent({
   const { writer, response } = createSSE();
 
   /*
-   * ---------------------------------------------------------------
-   * BETA: solo si el Player pide ?fallback=beta
-   * ---------------------------------------------------------------
+   * fallback=beta:
+   * El Player pide explícitamente Beta. Se salta Alpha.
    */
   if (fallbackBeta) {
     await sendSSE(writer, "connected", {
@@ -159,141 +158,15 @@ async function processContent({
       episode
     });
 
-    const betaKey = buildBetaCacheKey(
-      type, tmdbId, season, episode
-    );
-
-    let beta = null;
-    let betaCacheStatus = "miss";
-
-    if (!force && env.BETA_KV) {
-      const cached = await env.BETA_KV.get(betaKey, "json");
-
-      if (cached && Array.isArray(cached.links)) {
-        const links = deduplicateLinks(
-          cached.links.filter(isValidLink)
-        );
-
-        if (links.length > 0) {
-          betaCacheStatus = "hit";
-
-          await sendSSE(writer, "beta_cache_hit", {
-            success: true,
-            status: "beta_cache_hit",
-            source: "Beta",
-            found: links.length,
-            ttl_seconds: BETA_CACHE_TTL
-          });
-
-          beta = {
-            success: true,
-            links,
-            elapsed_ms: 0,
-            error: null,
-            mode: "kv"
-          };
-        }
-      }
-    }
-
-    if (!beta) {
-      await sendSSE(writer, "beta_cache_miss", {
-        success: true,
-        status: "beta_cache_miss",
-        source: "Beta",
-        force,
-        message: force
-          ? "force=true: se ignora BETA_KV."
-          : env.BETA_KV
-            ? "No existe un resultado válido en BETA_KV."
-            : "BETA_KV no está configurado."
-      });
-
-      await sendSSE(writer, "beta_search", {
-        success: true,
-        status: "searching_beta",
-        source: "Beta"
-      });
-
-      beta = await scrapeBeta({
-        env,
-        tmdbId,
-        type,
-        season,
-        episode
-      });
-
-      const links = beta.success
-        ? deduplicateLinks(beta.links.filter(isValidLink))
-        : [];
-
-      beta.links = links;
-
-      /*
-       * Solo cacheamos resultados positivos.
-       * Un resultado vacío NO bloquea nuevas búsquedas durante 6h.
-       */
-      if (env.BETA_KV && links.length > 0) {
-        ctx.waitUntil(
-          env.BETA_KV.put(
-            betaKey,
-            JSON.stringify({
-              links,
-              cached_at: Date.now()
-            }),
-            { expirationTtl: BETA_CACHE_TTL }
-          )
-        );
-      }
-    }
-
-    const betaLinks = deduplicateLinks(
-      (beta.links || []).filter(isValidLink)
-    );
-
-    await sendSSE(writer, "beta_found", {
-      success: betaLinks.length > 0,
-      status: betaLinks.length > 0
-        ? "beta_found"
-        : "beta_unavailable",
-      source: "Beta",
-      found: betaLinks.length,
-      links: betaLinks,
-      cache: betaCacheStatus,
-      http_code: beta.http_code ?? null,
-      content_type: beta.content_type ?? null,
-      elapsed_ms: beta.elapsed_ms ?? null,
-      parser: beta.parser ?? null,
-      raw_keys: beta.raw_keys ?? [],
-      all_embeds_languages: beta.all_embeds_languages ?? [],
-      all_embeds_urls: beta.all_embeds_urls ?? 0,
-      all_embeds_valid: beta.all_embeds_valid ?? 0,
-      all_embeds_discarded: beta.all_embeds_discarded ?? 0,
-      embeds_urls: beta.embeds_urls ?? 0,
-      embeds_valid: beta.embeds_valid ?? 0,
-      embeds_discarded: beta.embeds_discarded ?? 0,
-      error: beta.error ?? null
-    });
-
-    await sendSSE(writer, "complete", {
-      success: betaLinks.length > 0,
-      status: betaLinks.length > 0
-        ? "success"
-        : "source_unavailable",
-      event: "complete",
-      source: "Beta",
-      fallback: null,
-      tmdb_id: tmdbId,
+    const betaResult = await runBeta({
+      env,
+      ctx,
+      writer,
+      tmdbId,
       type,
       season,
       episode,
-      alpha_found: 0,
-      beta_found: betaLinks.length,
-      beta_queried: true,
-      found: betaLinks.length,
-      links: betaLinks,
-      beta_cache: betaCacheStatus,
-      beta_error: beta.error ?? null
+      force
     });
 
     writer.close();
@@ -301,15 +174,15 @@ async function processContent({
   }
 
   /*
-   * ---------------------------------------------------------------
-   * ALPHA: Supabase + ALPHA_KV
-   * ---------------------------------------------------------------
+   * Flujo normal:
+   * 1. Alpha (KV -> Supabase)
+   * 2. Si Alpha encuentra enlaces, termina.
+   * 3. Si Alpha NO encuentra enlaces, Beta se ejecuta automáticamente.
    */
-
   await sendSSE(writer, "connected", {
     success: true,
     status: "connected",
-    mode: "alpha",
+    mode: "alpha_then_beta",
     tmdb_id: tmdbId,
     type,
     season,
@@ -422,36 +295,212 @@ async function processContent({
   });
 
   /*
-   * IMPORTANTE:
-   * Alpha termina aquí. Beta queda exclusivamente bajo demanda.
+   * Alpha encontró contenido:
+   * NO se consulta Beta automáticamente.
    */
-  await sendSSE(writer, "complete", {
-    success: alphaLinks.length > 0,
-    status: alphaLinks.length > 0
-      ? "success"
-      : "source_unavailable",
-    event: "complete",
-    source: "Alpha",
-    fallback: "Beta",
-    tmdb_id: tmdbId,
+  if (alphaLinks.length > 0) {
+    await sendSSE(writer, "complete", {
+      success: true,
+      status: "success",
+      event: "complete",
+      source: "Alpha",
+      fallback: "Beta",
+      tmdb_id: tmdbId,
+      type,
+      season,
+      episode,
+      alpha_found: alphaLinks.length,
+      beta_found: 0,
+      beta_queried: false,
+      found: alphaLinks.length,
+      links: alphaLinks,
+      alpha_cache: alphaCacheStatus,
+      alpha_error: alpha.error ?? null,
+      beta_pending: false
+    });
+
+    writer.close();
+    return response;
+  }
+
+  /*
+   * Alpha NO encontró contenido:
+   * aquí se activa Beta automáticamente.
+   */
+  await sendSSE(writer, "beta_auto_fallback", {
+    success: true,
+    status: "alpha_empty_beta_starting",
+    source: "Beta",
+    reason: "alpha_found_0",
+    message: "Alpha no encontró servidores; se inicia Beta automáticamente."
+  });
+
+  await runBeta({
+    env,
+    ctx,
+    writer,
+    tmdbId,
     type,
     season,
     episode,
-    alpha_found: alphaLinks.length,
-    beta_found: 0,
-    beta_queried: false,
-    found: alphaLinks.length,
-    links: alphaLinks,
-    alpha_cache: alphaCacheStatus,
-    alpha_error: alpha.error ?? null,
-    beta_pending: true,
-    beta_endpoint: buildBetaEndpoint(
-      tmdbId, type, season, episode
-    )
+    force
   });
 
   writer.close();
   return response;
+}
+
+/*
+ * Ejecuta Beta usando BETA_KV antes del scraper.
+ */
+async function runBeta({
+  env,
+  ctx,
+  writer,
+  tmdbId,
+  type,
+  season,
+  episode,
+  force
+}) {
+  const betaKey = buildBetaCacheKey(
+    type, tmdbId, season, episode
+  );
+
+  let beta = null;
+  let betaCacheStatus = "miss";
+
+  if (!force && env.BETA_KV) {
+    const cached = await env.BETA_KV.get(betaKey, "json");
+
+    if (cached && Array.isArray(cached.links)) {
+      const links = deduplicateLinks(
+        cached.links.filter(isValidLink)
+      );
+
+      if (links.length > 0) {
+        betaCacheStatus = "hit";
+
+        await sendSSE(writer, "beta_cache_hit", {
+          success: true,
+          status: "beta_cache_hit",
+          source: "Beta",
+          found: links.length,
+          ttl_seconds: BETA_CACHE_TTL
+        });
+
+        beta = {
+          success: true,
+          links,
+          elapsed_ms: 0,
+          error: null,
+          mode: "kv"
+        };
+      }
+    }
+  }
+
+  if (!beta) {
+    await sendSSE(writer, "beta_cache_miss", {
+      success: true,
+      status: "beta_cache_miss",
+      source: "Beta",
+      force,
+      message: force
+        ? "force=true: se ignora BETA_KV."
+        : env.BETA_KV
+          ? "No existe un resultado válido en BETA_KV."
+          : "BETA_KV no está configurado."
+    });
+
+    await sendSSE(writer, "beta_search", {
+      success: true,
+      status: "searching_beta",
+      source: "Beta"
+    });
+
+    beta = await scrapeBeta({
+      env,
+      tmdbId,
+      type,
+      season,
+      episode
+    });
+
+    const links = beta.success
+      ? deduplicateLinks(beta.links.filter(isValidLink))
+      : [];
+
+    beta.links = links;
+
+    /*
+     * Solo se cachean resultados positivos.
+     * Los resultados vacíos no se almacenan durante 6h.
+     */
+    if (env.BETA_KV && links.length > 0) {
+      ctx.waitUntil(
+        env.BETA_KV.put(
+          betaKey,
+          JSON.stringify({
+            links,
+            cached_at: Date.now()
+          }),
+          { expirationTtl: BETA_CACHE_TTL }
+        )
+      );
+    }
+  }
+
+  const betaLinks = deduplicateLinks(
+    (beta.links || []).filter(isValidLink)
+  );
+
+  await sendSSE(writer, "beta_found", {
+    success: betaLinks.length > 0,
+    status: betaLinks.length > 0
+      ? "beta_found"
+      : "beta_unavailable",
+    source: "Beta",
+    found: betaLinks.length,
+    links: betaLinks,
+    cache: betaCacheStatus,
+    http_code: beta.http_code ?? null,
+    content_type: beta.content_type ?? null,
+    elapsed_ms: beta.elapsed_ms ?? null,
+    parser: beta.parser ?? null,
+    raw_keys: beta.raw_keys ?? [],
+    all_embeds_languages: beta.all_embeds_languages ?? [],
+    all_embeds_urls: beta.all_embeds_urls ?? 0,
+    all_embeds_valid: beta.all_embeds_valid ?? 0,
+    all_embeds_discarded: beta.all_embeds_discarded ?? 0,
+    embeds_urls: beta.embeds_urls ?? 0,
+    embeds_valid: beta.embeds_valid ?? 0,
+    embeds_discarded: beta.embeds_discarded ?? 0,
+    error: beta.error ?? null
+  });
+
+  await sendSSE(writer, "complete", {
+    success: betaLinks.length > 0,
+    status: betaLinks.length > 0
+      ? "success"
+      : "source_unavailable",
+    event: "complete",
+    source: "Beta",
+    fallback: null,
+    tmdb_id: tmdbId,
+    type,
+    season,
+    episode,
+    alpha_found: 0,
+    beta_found: betaLinks.length,
+    beta_queried: true,
+    found: betaLinks.length,
+    links: betaLinks,
+    beta_cache: betaCacheStatus,
+    beta_error: beta.error ?? null
+  });
+
+  return betaLinks;
 }
 
 /*
