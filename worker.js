@@ -1119,27 +1119,55 @@ function buildBetaEndpoint(
  */
 
 function createSSE() {
-  let controller;
+  let controller = null;
+  let closed = false;
+  const encoder = new TextEncoder();
+
+  // Comentario inicial grande para reducir buffering de proxies/clientes.
+  const SSE_PADDING = ":" + " ".repeat(2048) + "\n\n";
 
   const stream = new ReadableStream({
     start(c) {
       controller = c;
+      c.enqueue(encoder.encode(SSE_PADDING));
     },
     cancel() {
+      closed = true;
       controller = null;
     }
   });
 
+  // Heartbeat: mantiene viva la conexión mientras Beta puede tardar.
+  const heartbeat = setInterval(() => {
+    if (closed || !controller) return;
+    try {
+      controller.enqueue(encoder.encode(
+        `: heartbeat ${Date.now()}\n\n`
+      ));
+    } catch {
+      closed = true;
+      controller = null;
+    }
+  }, 10000);
+
   const writer = {
     write(chunk) {
-      if (!controller) return;
-      controller.enqueue(
-        new TextEncoder().encode(chunk)
-      );
+      if (closed || !controller) return;
+      try {
+        controller.enqueue(encoder.encode(chunk));
+      } catch {
+        closed = true;
+        controller = null;
+      }
     },
     close() {
+      if (closed) return;
+      closed = true;
+      clearInterval(heartbeat);
       if (!controller) return;
-      controller.close();
+      try {
+        controller.close();
+      } catch {}
       controller = null;
     }
   };
@@ -1147,8 +1175,9 @@ function createSSE() {
   const headers = new Headers({
     ...CORS,
     "Content-Type": "text/event-stream; charset=UTF-8",
-    "Cache-Control": "no-cache, no-store, must-revalidate",
-    "X-Accel-Buffering": "no"
+    "Cache-Control": "no-cache, no-store, must-revalidate, no-transform",
+    "X-Accel-Buffering": "no",
+    "Connection": "keep-alive"
   });
 
   return {
@@ -1160,10 +1189,14 @@ function createSSE() {
   };
 }
 
-async function sendSSE(writer, event, data) {
-  writer.write(`event: ${event}\n`);
-  writer.write(`data: ${JSON.stringify(data)}\n\n`);
-  await Promise.resolve();
+function sendSSE(writer, event, data) {
+  // Un solo chunk por evento. El comentario final/padding ayuda a
+  // que cada evento atraviese intermediarios que agrupan chunks pequeños.
+  writer.write(
+    `event: ${event}\n` +
+    `data: ${JSON.stringify(data)}\n\n` +
+    `: flush ${Date.now()}\n\n`
+  );
 }
 
 function failure(status, error, started) {
