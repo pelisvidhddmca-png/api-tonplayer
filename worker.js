@@ -1,25 +1,19 @@
 /*
  * CONTENT WORKER
  *
- * Alpha = Supabase (solo lectura con ANON KEY)
- * Beta  = scraper (automático si Alpha queda sin enlaces, o ?fallback=beta)
+ * Beta = scraper
  *
  * KV:
- *   ALPHA_KV -> Alpha, TTL 6h
- *   BETA_KV  -> Beta,  TTL 6h
+ *   BETA_KV  -> Beta, TTL 6h
  *
  * Variables:
  *   API_KEY
- *   SUPABASE_URL
- *   SUPABASE_ANON_KEY
  *   SOURCE_URL
  *
  * Bindings:
- *   ALPHA_KV
  *   BETA_KV
  */
 
-const ALPHA_CACHE_TTL = 6 * 60 * 60;
 const BETA_CACHE_TTL  = 6 * 60 * 60;
 
 const BLACKLIST = [
@@ -86,7 +80,6 @@ async function router(request, env, ctx) {
     }, 401);
   }
 
-  const fallbackBeta = isBetaFallback(url.searchParams.get("fallback"));
   const force = isTrue(url.searchParams.get("force"));
 
   let match = path.match(/^\/play\/movie\/(\d+)$/);
@@ -97,7 +90,6 @@ async function router(request, env, ctx) {
       type: "movie",
       season: 0,
       episode: 0,
-      fallbackBeta,
       force
     });
   }
@@ -110,7 +102,6 @@ async function router(request, env, ctx) {
       type: "tv",
       season: Number(match[2]),
       episode: Number(match[3]),
-      fallbackBeta,
       force
     });
   }
@@ -138,201 +129,19 @@ async function processContent({
   type,
   season,
   episode,
-  fallbackBeta,
   force
 }) {
   const { writer, response } = createSSE();
 
-  /*
-   * fallback=beta:
-   * El Player pide explícitamente Beta. Se salta Alpha.
-   */
-  if (fallbackBeta) {
-    await sendSSE(writer, "connected", {
-      success: true,
-      status: "connected",
-      mode: "beta_fallback",
-      tmdb_id: tmdbId,
-      type,
-      season,
-      episode
-    });
-
-    const betaResult = await runBeta({
-      env,
-      ctx,
-      writer,
-      tmdbId,
-      type,
-      season,
-      episode,
-      force
-    });
-
-    writer.close();
-    return response;
-  }
-
-  /*
-   * Flujo normal:
-   * 1. Alpha (KV -> Supabase)
-   * 2. Si Alpha encuentra enlaces, termina.
-   * 3. Si Alpha NO encuentra enlaces, Beta se ejecuta automáticamente.
-   */
   await sendSSE(writer, "connected", {
     success: true,
     status: "connected",
-    mode: "alpha_then_beta",
+    mode: "beta",
+    source: "Beta",
     tmdb_id: tmdbId,
     type,
     season,
     episode
-  });
-
-  await sendSSE(writer, "alpha_search", {
-    success: true,
-    status: "searching_alpha",
-    source: "Alpha"
-  });
-
-  const alphaKey = buildAlphaCacheKey(
-    type, tmdbId, season, episode
-  );
-
-  let alpha = null;
-  let alphaCacheStatus = "miss";
-
-  if (!force && env.ALPHA_KV) {
-    const cached = await env.ALPHA_KV.get(alphaKey, "json");
-
-    if (cached && Array.isArray(cached.links)) {
-      const links = deduplicateLinks(
-        cached.links.filter(isValidLink)
-      );
-
-      if (links.length > 0) {
-        alphaCacheStatus = "hit";
-
-        await sendSSE(writer, "alpha_cache_hit", {
-          success: true,
-          status: "alpha_cache_hit",
-          source: "Alpha",
-          found: links.length,
-          ttl_seconds: ALPHA_CACHE_TTL
-        });
-
-        alpha = {
-          success: true,
-          links,
-          elapsed_ms: 0,
-          error: null,
-          mode: "kv"
-        };
-      }
-    }
-  }
-
-  if (!alpha) {
-    await sendSSE(writer, "alpha_cache_miss", {
-      success: true,
-      status: "alpha_cache_miss",
-      source: "Alpha",
-      force,
-      message: force
-        ? "force=true: se ignora ALPHA_KV."
-        : env.ALPHA_KV
-          ? "No existe un resultado válido en ALPHA_KV."
-          : "ALPHA_KV no está configurado."
-    });
-
-    alpha = await fetchAlphaFromSupabase({
-      env,
-      tmdbId,
-      type,
-      season,
-      episode
-    });
-
-    if (
-      env.ALPHA_KV &&
-      alpha.success &&
-      alpha.links.length > 0
-    ) {
-      ctx.waitUntil(
-        env.ALPHA_KV.put(
-          alphaKey,
-          JSON.stringify({
-            links: alpha.links,
-            cached_at: Date.now()
-          }),
-          { expirationTtl: ALPHA_CACHE_TTL }
-        )
-      );
-    }
-  }
-
-  const alphaLinks = deduplicateLinks(
-    (alpha.links || []).filter(isValidLink)
-  );
-
-  await sendSSE(writer, "alpha_found", {
-    success: alphaLinks.length > 0,
-    status: alphaLinks.length > 0
-      ? "alpha_found"
-      : "alpha_unavailable",
-    source: "Alpha",
-    found: alphaLinks.length,
-    links: alphaLinks,
-    cache: alphaCacheStatus,
-    http_code: alpha.http_code ?? null,
-    content_type: alpha.content_type ?? null,
-    elapsed_ms: alpha.elapsed_ms ?? null,
-    parser: alpha.parser ?? "supabase_rest",
-    rows_received: alpha.rows_received ?? 0,
-    rows_valid: alpha.rows_valid ?? 0,
-    rows_discarded: alpha.rows_discarded ?? 0,
-    error: alpha.error ?? null
-  });
-
-  /*
-   * Alpha encontró contenido:
-   * NO se consulta Beta automáticamente.
-   */
-  if (alphaLinks.length > 0) {
-    await sendSSE(writer, "complete", {
-      success: true,
-      status: "success",
-      event: "complete",
-      source: "Alpha",
-      fallback: "Beta",
-      tmdb_id: tmdbId,
-      type,
-      season,
-      episode,
-      alpha_found: alphaLinks.length,
-      beta_found: 0,
-      beta_queried: false,
-      found: alphaLinks.length,
-      links: alphaLinks,
-      alpha_cache: alphaCacheStatus,
-      alpha_error: alpha.error ?? null,
-      beta_pending: false
-    });
-
-    writer.close();
-    return response;
-  }
-
-  /*
-   * Alpha NO encontró contenido:
-   * aquí se activa Beta automáticamente.
-   */
-  await sendSSE(writer, "beta_auto_fallback", {
-    success: true,
-    status: "alpha_empty_beta_starting",
-    source: "Beta",
-    reason: "alpha_found_0",
-    message: "Alpha no encontró servidores; se inicia Beta automáticamente."
   });
 
   await runBeta({
@@ -491,7 +300,6 @@ async function runBeta({
     type,
     season,
     episode,
-    alpha_found: 0,
     beta_found: betaLinks.length,
     beta_queried: true,
     found: betaLinks.length,
@@ -501,154 +309,6 @@ async function runBeta({
   });
 
   return betaLinks;
-}
-
-/*
- * ==================================================================
- * ALPHA / SUPABASE
- * ==================================================================
- */
-
-async function fetchAlphaFromSupabase({
-  env,
-  tmdbId,
-  type,
-  season,
-  episode
-}) {
-  const started = Date.now();
-
-  if (!env.SUPABASE_URL) {
-    return failure(
-      "not_configured",
-      "SUPABASE_URL no está configurado.",
-      started
-    );
-  }
-
-  if (!env.SUPABASE_ANON_KEY) {
-    return failure(
-      "not_configured",
-      "SUPABASE_ANON_KEY no está configurado.",
-      started
-    );
-  }
-
-  const base = env.SUPABASE_URL.replace(/\/+$/, "");
-
-  const params = new URLSearchParams();
-
-  params.set(
-    "select",
-    "tmdb_id,tipo,url_embed,servidor,idioma,temporada,episodio"
-  );
-  params.set("tmdb_id", `eq.${tmdbId}`);
-  params.set("tipo", `eq.${type}`);
-  params.set("temporada", `eq.${season}`);
-  params.set("episodio", `eq.${episode}`);
-
-  const endpoint =
-    `${base}/rest/v1/enlaces?${params.toString()}`;
-
-  let response;
-
-  try {
-    response = await fetch(endpoint, {
-      method: "GET",
-      headers: {
-        "apikey": env.SUPABASE_ANON_KEY,
-        "Authorization": `Bearer ${env.SUPABASE_ANON_KEY}`,
-        "Accept": "application/json"
-      }
-    });
-  } catch (err) {
-    return failure(
-      "request_error",
-      err?.message || String(err),
-      started
-    );
-  }
-
-  const contentType =
-    response.headers.get("content-type") || "";
-
-  let rows;
-
-  try {
-    rows = await response.json();
-  } catch (err) {
-    return {
-      success: false,
-      status: "invalid_json",
-      links: [],
-      http_code: response.status,
-      content_type: contentType,
-      elapsed_ms: Date.now() - started,
-      parser: "supabase_rest",
-      error: "Supabase devolvió una respuesta no JSON."
-    };
-  }
-
-  if (!response.ok) {
-    return {
-      success: false,
-      status: "http_error",
-      links: [],
-      http_code: response.status,
-      content_type: contentType,
-      elapsed_ms: Date.now() - started,
-      parser: "supabase_rest",
-      error: extractErrorMessage(rows)
-    };
-  }
-
-  if (!Array.isArray(rows)) {
-    return {
-      success: false,
-      status: "invalid_response",
-      links: [],
-      http_code: response.status,
-      content_type: contentType,
-      elapsed_ms: Date.now() - started,
-      parser: "supabase_rest",
-      error: "Supabase no devolvió un array."
-    };
-  }
-
-  const rowsReceived = rows.length;
-  const links = [];
-
-  for (const row of rows) {
-    if (!row || typeof row !== "object") continue;
-    if (!isHttpUrl(row.url_embed)) continue;
-    if (isBlacklisted(row.servidor)) continue;
-
-    links.push({
-      url_embed: row.url_embed,
-      servidor: normalizeServerName(row.servidor || "Desconocido"),
-      idioma: normalizeLanguage(row.idioma || "Desconocido")
-    });
-  }
-
-  const unique = deduplicateLinks(links);
-
-  return {
-    success: unique.length > 0,
-    status: unique.length > 0
-      ? "links_found"
-      : "no_links",
-    links: unique,
-    http_code: response.status,
-    content_type: contentType,
-    elapsed_ms: Date.now() - started,
-    parser: "supabase_rest",
-    rows_received: rowsReceived,
-    rows_valid: unique.length,
-    rows_discarded: Math.max(0, rowsReceived - unique.length),
-    error: unique.length > 0
-      ? null
-      : "Supabase respondió correctamente pero no hay enlaces válidos."
-  };
 }
 
 /*
@@ -1087,31 +747,6 @@ function capitalize(value) {
  * ==================================================================
  */
 
-function buildAlphaCacheKey(type, tmdbId, season, episode) {
-  return type === "movie"
-    ? `alpha:movie:${tmdbId}`
-    : `alpha:tv:${tmdbId}:${season}:${episode}`;
-}
-
-function buildBetaCacheKey(type, tmdbId, season, episode) {
-  return type === "movie"
-    ? `beta:movie:${tmdbId}`
-    : `beta:tv:${tmdbId}:${season}:${episode}`;
-}
-
-function buildBetaEndpoint(
-  tmdbId,
-  type,
-  season,
-  episode
-) {
-  if (type === "movie") {
-    return `/play/movie/${tmdbId}?fallback=beta`;
-  }
-
-  return `/play/tv/${tmdbId}/${season}/${episode}?fallback=beta`;
-}
-
 /*
  * ==================================================================
  * SSE / HELPERS
@@ -1234,18 +869,6 @@ function objectKeys(value) {
   )
     ? Object.keys(value)
     : [];
-}
-
-function isBetaFallback(value) {
-  return [
-    "beta",
-    "1",
-    "true",
-    "yes",
-    "on"
-  ].includes(
-    String(value || "").trim().toLowerCase()
-  );
 }
 
 function isTrue(value) {
