@@ -9,6 +9,8 @@
  * Variables:
  *   API_KEY
  *   SOURCE_URL
+ *   SUPABASE_URL
+ *   SUPABASE_ANON_KEY (o SUPABASE_SERVICE_KEY para insertar)
  *
  * Bindings:
  *   BETA_KV
@@ -264,6 +266,48 @@ async function runBeta({
     (beta.links || []).filter(isValidLink)
   );
 
+  let databaseSave = {
+    success: false,
+    status: "not_attempted",
+    inserted: 0,
+    existing: 0,
+    error: null
+  };
+
+  /*
+   * Sincroniza los enlaces con Supabase.
+   * Esto se hace tanto cuando vienen del scraper como cuando vienen de
+   * BETA_KV, para que la base de datos vuelva a ser el almacenamiento
+   * permanente. Los duplicados se comprueban antes de insertar.
+   */
+  if (betaLinks.length > 0) {
+    await sendSSE(writer, "beta_database_insert", {
+      success: true,
+      status: "inserting_database",
+      source: "Supabase",
+      found: betaLinks.length
+    });
+
+    databaseSave = await saveLinksToSupabase({
+      env,
+      tmdbId,
+      type,
+      season,
+      episode,
+      links: betaLinks
+    });
+
+    await sendSSE(writer, "beta_database_saved", {
+      success: databaseSave.success,
+      status: databaseSave.status,
+      source: "Supabase",
+      inserted: databaseSave.inserted,
+      existing: databaseSave.existing,
+      found: betaLinks.length,
+      error: databaseSave.error
+    });
+  }
+
   await sendSSE(writer, "beta_found", {
     success: betaLinks.length > 0,
     status: betaLinks.length > 0
@@ -305,10 +349,201 @@ async function runBeta({
     found: betaLinks.length,
     links: betaLinks,
     beta_cache: betaCacheStatus,
-    beta_error: beta.error ?? null
+    beta_error: beta.error ?? null,
+    database_inserted: databaseSave.inserted,
+    database_existing: databaseSave.existing,
+    database_status: databaseSave.status,
+    database_error: databaseSave.error
   });
 
   return betaLinks;
+}
+
+/*
+ * ==================================================================
+ * SUPABASE / PERSISTENCIA
+ * ==================================================================
+ */
+
+async function saveLinksToSupabase({
+  env,
+  tmdbId,
+  type,
+  season,
+  episode,
+  links
+}) {
+  const started = Date.now();
+
+  if (!env.SUPABASE_URL) {
+    return {
+      success: false,
+      status: "supabase_not_configured",
+      inserted: 0,
+      existing: 0,
+      error: "SUPABASE_URL no está configurado."
+    };
+  }
+
+  const supabaseKey =
+    env.SUPABASE_SERVICE_KEY ||
+    env.SUPABASE_ANON_KEY;
+
+  if (!supabaseKey) {
+    return {
+      success: false,
+      status: "supabase_not_configured",
+      inserted: 0,
+      existing: 0,
+      error: "Configura SUPABASE_SERVICE_KEY o SUPABASE_ANON_KEY."
+    };
+  }
+
+  const base = env.SUPABASE_URL.replace(/\/+$/, "");
+  const endpoint = `${base}/rest/v1/enlaces`;
+
+  const headers = {
+    "apikey": supabaseKey,
+    "Authorization": `Bearer ${supabaseKey}`,
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+  };
+
+  /* Primero obtenemos los registros existentes para evitar duplicados. */
+  const query = new URLSearchParams();
+  query.set("select", "url_embed,idioma");
+  query.set("tmdb_id", `eq.${tmdbId}`);
+  query.set("tipo", `eq.${type}`);
+  query.set("temporada", `eq.${season}`);
+  query.set("episodio", `eq.${episode}`);
+
+  let existingRows;
+
+  try {
+    const response = await fetch(
+      `${endpoint}?${query.toString()}`,
+      {
+        method: "GET",
+        headers
+      }
+    );
+
+    const text = await response.text();
+    try {
+      existingRows = JSON.parse(text);
+    } catch {
+      existingRows = null;
+    }
+
+    if (!response.ok || !Array.isArray(existingRows)) {
+      return {
+        success: false,
+        status: "supabase_read_error",
+        inserted: 0,
+        existing: 0,
+        elapsed_ms: Date.now() - started,
+        error: extractErrorMessage(existingRows || text)
+      };
+    }
+  } catch (err) {
+    return {
+      success: false,
+      status: "supabase_request_error",
+      inserted: 0,
+      existing: 0,
+      elapsed_ms: Date.now() - started,
+      error: err?.message || String(err)
+    };
+  }
+
+  const existing = new Set();
+
+  for (const row of existingRows) {
+    if (!row || typeof row !== "object") continue;
+    if (!isHttpUrl(row.url_embed)) continue;
+    existing.add(`${normalizeLanguage(row.idioma || "Desconocido")}|${row.url_embed}`);
+  }
+
+  const rowsToInsert = [];
+
+  for (const link of links) {
+    const idioma = normalizeLanguage(link.idioma || "Desconocido");
+    const key = `${idioma}|${link.url_embed}`;
+
+    if (existing.has(key)) continue;
+
+    rowsToInsert.push({
+      tmdb_id: String(tmdbId),
+      tipo: type,
+      url_embed: link.url_embed,
+      servidor: normalizeServerName(link.servidor || "Desconocido"),
+      idioma,
+      temporada: Number(season) || 0,
+      episodio: Number(episode) || 0
+    });
+
+    existing.add(key);
+  }
+
+  if (rowsToInsert.length === 0) {
+    return {
+      success: true,
+      status: "already_exists",
+      inserted: 0,
+      existing: links.length,
+      elapsed_ms: Date.now() - started,
+      error: null
+    };
+  }
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        ...headers,
+        "Prefer": "return=minimal"
+      },
+      body: JSON.stringify(rowsToInsert)
+    });
+
+    const text = await response.text();
+    let data = null;
+
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+
+    if (!response.ok) {
+      return {
+        success: false,
+        status: "supabase_insert_error",
+        inserted: 0,
+        existing: links.length - rowsToInsert.length,
+        elapsed_ms: Date.now() - started,
+        error: extractErrorMessage(data)
+      };
+    }
+
+    return {
+      success: true,
+      status: "saved",
+      inserted: rowsToInsert.length,
+      existing: links.length - rowsToInsert.length,
+      elapsed_ms: Date.now() - started,
+      error: null
+    };
+  } catch (err) {
+    return {
+      success: false,
+      status: "supabase_request_error",
+      inserted: 0,
+      existing: links.length - rowsToInsert.length,
+      elapsed_ms: Date.now() - started,
+      error: err?.message || String(err)
+    };
+  }
 }
 
 /*
