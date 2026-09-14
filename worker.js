@@ -5,17 +5,19 @@
  *
  * Función:
  *
- *   URL con parámetros
- *        ↓
- *   Scraper Beta
- *        ↓
- *   Extraer enlaces
- *        ↓
- *   Filtrar servidores bloqueados
- *        ↓
- *   Detectar duplicados
- *        ↓
- *   Supabase → enlaces
+ *   /play/movie/ID
+ *          ↓
+ *      Scraper Beta
+ *          ↓
+ *      Extraer enlaces
+ *          ↓
+ *      Filtrar blacklist
+ *          ↓
+ *      1 servidor por idioma
+ *          ↓
+ *      Comprobar Supabase
+ *          ↓
+ *      Insertar solamente nuevos
  *
  * RUTAS:
  *
@@ -25,17 +27,15 @@
  *   GET /play/tv/:tmdb_id/:season/:episode
  *   GET /play/tv/:tmdb_id/:season/:episode?force=true
  *
- * VARIABLES DE CLOUDFLARE:
+ * VARIABLES:
  *
  *   SOURCE_URL
  *   SUPABASE_URL
  *   SUPABASE_SERVICE_KEY
  *
- * También acepta:
+ * Opcional:
  *
  *   SUPABASE_ANON_KEY
- *
- * si las políticas RLS permiten INSERT/SELECT.
  *
  * NO USA:
  *
@@ -44,6 +44,15 @@
  *   BETA_KV
  *   CACHE
  *   ALPHA
+ *
+ * REGLA DE DUPLICADOS:
+ *
+ *   Un solo servidor por idioma.
+ *
+ *   Latino + Abyss       = permitido
+ *   Latino + Abyss       = duplicado
+ *   Castellano + Abyss   = permitido
+ *   Subtitulado + Abyss  = permitido
  *
  * ================================================================
  */
@@ -69,9 +78,11 @@ const CORS_HEADERS = {
  * ================================================================ */
 
 export default {
+
   async fetch(request, env, ctx) {
 
     if (request.method === "OPTIONS") {
+
       return new Response(null, {
         status: 204,
         headers: CORS_HEADERS
@@ -79,6 +90,7 @@ export default {
     }
 
     if (request.method !== "GET") {
+
       return jsonResponse(
         {
           success: false,
@@ -89,16 +101,27 @@ export default {
     }
 
     try {
-      return await router(request, env, ctx);
+
+      return await router(
+        request,
+        env,
+        ctx
+      );
+
     } catch (error) {
 
-      console.error("Worker error:", error);
+      console.error(
+        "Worker error:",
+        error
+      );
 
       return jsonResponse(
         {
           success: false,
           status: "worker_error",
-          error: error?.message || String(error)
+          error:
+            error?.message ||
+            String(error)
         },
         500
       );
@@ -111,15 +134,25 @@ export default {
  * ROUTER
  * ================================================================ */
 
-async function router(request, env, ctx) {
+async function router(
+  request,
+  env,
+  ctx
+) {
 
-  const url = new URL(request.url);
+  const url =
+    new URL(request.url);
 
-  const path = url.pathname.replace(/\/+$/, "");
+  const path =
+    url.pathname.replace(
+      /\/+$/,
+      ""
+    );
 
-  const force = isTrue(
-    url.searchParams.get("force")
-  );
+  const force =
+    isTrue(
+      url.searchParams.get("force")
+    );
 
 
   /* --------------------------------------------------------------
@@ -129,8 +162,11 @@ async function router(request, env, ctx) {
   if (path === "/health") {
 
     return jsonResponse({
+
       success: true,
+
       status: "online"
+
     });
   }
 
@@ -141,21 +177,32 @@ async function router(request, env, ctx) {
    * /play/movie/550
    * -------------------------------------------------------------- */
 
-  let match = path.match(
-    /^\/play\/movie\/(\d+)$/
-  );
+  let match =
+    path.match(
+      /^\/play\/movie\/(\d+)$/
+    );
+
 
   if (match) {
 
-    const tmdbId = match[1];
-
     return ingestContent({
+
       env,
+
       ctx,
-      tmdbId,
-      type: "movie",
-      season: 0,
-      episode: 0,
+
+      tmdbId:
+        match[1],
+
+      type:
+        "movie",
+
+      season:
+        0,
+
+      episode:
+        0,
+
       force
     });
   }
@@ -167,25 +214,32 @@ async function router(request, env, ctx) {
    * /play/tv/1399/1/1
    * -------------------------------------------------------------- */
 
-  match = path.match(
-    /^\/play\/tv\/(\d+)\/(\d+)\/(\d+)$/
-  );
+  match =
+    path.match(
+      /^\/play\/tv\/(\d+)\/(\d+)\/(\d+)$/
+    );
+
 
   if (match) {
 
-    const tmdbId = match[1];
-
-    const season = Number(match[2]);
-
-    const episode = Number(match[3]);
-
     return ingestContent({
+
       env,
+
       ctx,
-      tmdbId,
-      type: "tv",
-      season,
-      episode,
+
+      tmdbId:
+        match[1],
+
+      type:
+        "tv",
+
+      season:
+        Number(match[2]),
+
+      episode:
+        Number(match[3]),
+
       force
     });
   }
@@ -206,7 +260,7 @@ async function router(request, env, ctx) {
 
 
 /* ================================================================
- * MAIN INGEST
+ * INGEST CONTENT
  * ================================================================ */
 
 async function ingestContent({
@@ -219,11 +273,12 @@ async function ingestContent({
   force
 }) {
 
-  const started = Date.now();
+  const started =
+    Date.now();
 
 
   /* --------------------------------------------------------------
-   * CHECK CONFIG
+   * CONFIG
    * -------------------------------------------------------------- */
 
   if (!env.SOURCE_URL) {
@@ -231,15 +286,20 @@ async function ingestContent({
     return jsonResponse(
       {
         success: false,
-        status: "not_configured",
-        error: "SOURCE_URL no está configurado."
+
+        status:
+          "not_configured",
+
+        error:
+          "SOURCE_URL no está configurado."
       },
       500
     );
   }
 
 
-  const supabase = getSupabaseConfig(env);
+  const supabase =
+    getSupabaseConfig(env);
 
 
   if (!supabase) {
@@ -247,7 +307,10 @@ async function ingestContent({
     return jsonResponse(
       {
         success: false,
-        status: "not_configured",
+
+        status:
+          "not_configured",
+
         error:
           "Configura SUPABASE_URL y SUPABASE_SERVICE_KEY."
       },
@@ -257,9 +320,11 @@ async function ingestContent({
 
 
   /* --------------------------------------------------------------
-   * COMPROBAR BASE DE DATOS
+   * COMPROBAR SI YA EXISTE
    *
-   * Si no se utiliza force=true y ya existen enlaces,
+   * Sin force=true:
+   *
+   * Si ya hay servidores para ese título/episodio,
    * no hacemos scraping innecesario.
    * -------------------------------------------------------------- */
 
@@ -268,13 +333,19 @@ async function ingestContent({
 
   if (!force) {
 
-    const dbCheck = await getExistingLinks({
-      supabase,
-      tmdbId,
-      type,
-      season,
-      episode
-    });
+    const dbCheck =
+      await getExistingLinks({
+
+        supabase,
+
+        tmdbId,
+
+        type,
+
+        season,
+
+        episode
+      });
 
 
     if (!dbCheck.ok) {
@@ -282,29 +353,46 @@ async function ingestContent({
       return jsonResponse(
         {
           success: false,
-          status: "database_error",
-          tmdb_id: tmdbId,
+
+          status:
+            "database_error",
+
+          tmdb_id:
+            tmdbId,
+
           type,
+
           season,
+
           episode,
-          error: dbCheck.error,
-          elapsed_ms: Date.now() - started
+
+          error:
+            dbCheck.error,
+
+          elapsed_ms:
+            Date.now() -
+            started
         },
         502
       );
     }
 
 
-    existing = dbCheck.links;
+    existing =
+      dbCheck.links;
 
 
     if (existing.length > 0) {
 
       return jsonResponse({
-        success: true,
-        status: "already_exists",
 
-        tmdb_id: tmdbId,
+        success: true,
+
+        status:
+          "already_exists",
+
+        tmdb_id:
+          tmdbId,
 
         type,
 
@@ -312,15 +400,21 @@ async function ingestContent({
 
         episode,
 
-        found: existing.length,
+        found:
+          existing.length,
 
-        inserted: 0,
+        inserted:
+          0,
 
-        existing: existing.length,
+        existing:
+          existing.length,
 
-        force: false,
+        force:
+          false,
 
-        elapsed_ms: Date.now() - started
+        elapsed_ms:
+          Date.now() -
+          started
       });
     }
   }
@@ -330,20 +424,37 @@ async function ingestContent({
    * SCRAPER BETA
    * -------------------------------------------------------------- */
 
-  const beta = await scrapeBeta({
-    env,
-    tmdbId,
-    type,
-    season,
-    episode
-  });
+  const beta =
+    await scrapeBeta({
+
+      env,
+
+      tmdbId,
+
+      type,
+
+      season,
+
+      episode
+    });
 
 
-  const links = beta.success
-    ? deduplicateLinks(
-        (beta.links || []).filter(isValidLink)
-      )
-    : [];
+  /*
+   * MUY IMPORTANTE:
+   *
+   * deduplicateLinks() ahora elimina duplicados
+   * usando:
+   *
+   * idioma + servidor
+   */
+
+  const links =
+    beta.success
+      ? deduplicateLinks(
+          (beta.links || [])
+            .filter(isValidLink)
+        )
+      : [];
 
 
   /* --------------------------------------------------------------
@@ -353,13 +464,15 @@ async function ingestContent({
   if (links.length === 0) {
 
     return jsonResponse({
+
       success: false,
 
       status:
         beta.status ||
         "no_links",
 
-      tmdb_id: tmdbId,
+      tmdb_id:
+        tmdbId,
 
       type,
 
@@ -367,37 +480,47 @@ async function ingestContent({
 
       episode,
 
-      found: 0,
+      found:
+        0,
 
-      inserted: 0,
+      inserted:
+        0,
 
-      existing: existing.length,
+      existing:
+        existing.length,
 
       force,
 
       scraper: {
 
         http_code:
-          beta.http_code ?? null,
+          beta.http_code ??
+          null,
 
         content_type:
-          beta.content_type ?? null,
+          beta.content_type ??
+          null,
 
         elapsed_ms:
-          beta.elapsed_ms ?? null,
+          beta.elapsed_ms ??
+          null,
 
         parser:
-          beta.parser ?? null,
+          beta.parser ??
+          null,
 
         raw_keys:
-          beta.raw_keys ?? [],
+          beta.raw_keys ??
+          [],
 
         error:
-          beta.error ?? null
+          beta.error ??
+          null
       },
 
       elapsed_ms:
-        Date.now() - started
+        Date.now() -
+        started
     });
   }
 
@@ -405,17 +528,27 @@ async function ingestContent({
   /* --------------------------------------------------------------
    * CONSULTAR DB
    *
-   * Incluso con force=true se consulta antes de insertar,
-   * para evitar duplicados.
+   * Siempre hacemos una segunda comprobación antes de insertar.
+   *
+   * Esto es importante cuando:
+   *
+   * ?force=true
+   *
    * -------------------------------------------------------------- */
 
-  const dbCheck = await getExistingLinks({
-    supabase,
-    tmdbId,
-    type,
-    season,
-    episode
-  });
+  const dbCheck =
+    await getExistingLinks({
+
+      supabase,
+
+      tmdbId,
+
+      type,
+
+      season,
+
+      episode
+    });
 
 
   if (!dbCheck.ok) {
@@ -424,9 +557,11 @@ async function ingestContent({
       {
         success: false,
 
-        status: "database_error",
+        status:
+          "database_error",
 
-        tmdb_id: tmdbId,
+        tmdb_id:
+          tmdbId,
 
         type,
 
@@ -434,88 +569,126 @@ async function ingestContent({
 
         episode,
 
-        found: links.length,
+        found:
+          links.length,
 
-        inserted: 0,
+        inserted:
+          0,
 
-        error: dbCheck.error,
+        error:
+          dbCheck.error,
 
         elapsed_ms:
-          Date.now() - started
+          Date.now() -
+          started
       },
       502
     );
   }
 
 
-  existing = dbCheck.links;
+  existing =
+    dbCheck.links;
 
 
   /* --------------------------------------------------------------
-   * CREAR SET DE DUPLICADOS
+   * CREAR SET DE SERVIDORES EXISTENTES
+   *
+   * CLAVE:
+   *
+   * idioma + servidor
+   *
+   * No usamos la URL.
    * -------------------------------------------------------------- */
 
-  const existingKeys = new Set(
-    existing.map(
-      link =>
-        `${link.idioma}|${link.url_embed}`
-    )
-  );
+  const existingKeys =
+    new Set();
+
+
+  for (const link of existing) {
+
+    const key =
+      makeServerLanguageKey(
+        link.idioma,
+        link.servidor
+      );
+
+
+    existingKeys.add(
+      key
+    );
+  }
 
 
   /* --------------------------------------------------------------
-   * SOLO ENLACES NUEVOS
+   * SOLO NUEVOS SERVIDORES
    * -------------------------------------------------------------- */
 
-  const newLinks = links.filter(
-    link =>
-      !existingKeys.has(
-        `${link.idioma}|${link.url_embed}`
-      )
-  );
+  const newLinks =
+    links.filter(link => {
+
+      const key =
+        makeServerLanguageKey(
+          link.idioma,
+          link.servidor
+        );
+
+      return !existingKeys.has(
+        key
+      );
+    });
 
 
   /* --------------------------------------------------------------
    * INSERTAR
    * -------------------------------------------------------------- */
 
-  let inserted = 0;
+  let inserted =
+    0;
 
 
   if (newLinks.length > 0) {
 
-    const rows = newLinks.map(link => ({
+    const rows =
+      newLinks.map(
+        link => ({
 
-      tmdb_id: String(tmdbId),
+          tmdb_id:
+            String(tmdbId),
 
-      tipo: type,
+          tipo:
+            type,
 
-      url_embed: link.url_embed,
+          url_embed:
+            link.url_embed,
 
-      servidor:
-        link.servidor ||
-        "Desconocido",
+          servidor:
+            link.servidor ||
+            "Desconocido",
 
-      idioma:
-        link.idioma ||
-        "Latino",
+          idioma:
+            link.idioma ||
+            "Latino",
 
-      temporada:
-        type === "tv"
-          ? Number(season)
-          : 0,
+          temporada:
+            type === "tv"
+              ? Number(season)
+              : 0,
 
-      episodio:
-        type === "tv"
-          ? Number(episode)
-          : 0
+          episodio:
+            type === "tv"
+              ? Number(episode)
+              : 0
 
-    }));
+        })
+      );
 
 
     const insertResult =
       await insertLinks({
+
         supabase,
+
         rows
       });
 
@@ -529,7 +702,8 @@ async function ingestContent({
           status:
             "database_insert_error",
 
-          tmdb_id: tmdbId,
+          tmdb_id:
+            tmdbId,
 
           type,
 
@@ -537,9 +711,11 @@ async function ingestContent({
 
           episode,
 
-          found: links.length,
+          found:
+            links.length,
 
-          inserted: 0,
+          inserted:
+            0,
 
           existing:
             existing.length,
@@ -551,7 +727,8 @@ async function ingestContent({
             insertResult.error,
 
           elapsed_ms:
-            Date.now() - started
+            Date.now() -
+            started
         },
         502
       );
@@ -566,17 +743,18 @@ async function ingestContent({
   /* --------------------------------------------------------------
    * RESULTADO
    *
-   * NO DEVUELVE LOS ENLACES.
-   * Solo informa qué ocurrió.
+   * NO devuelve las URLs.
    * -------------------------------------------------------------- */
 
   return jsonResponse({
 
     success: true,
 
-    status: "saved",
+    status:
+      "saved",
 
-    tmdb_id: tmdbId,
+    tmdb_id:
+      tmdbId,
 
     type,
 
@@ -601,47 +779,61 @@ async function ingestContent({
     scraper: {
 
       http_code:
-        beta.http_code ?? null,
+        beta.http_code ??
+        null,
 
       content_type:
-        beta.content_type ?? null,
+        beta.content_type ??
+        null,
 
       elapsed_ms:
-        beta.elapsed_ms ?? null,
+        beta.elapsed_ms ??
+        null,
 
       parser:
-        beta.parser ?? null,
+        beta.parser ??
+        null,
 
       raw_keys:
-        beta.raw_keys ?? [],
+        beta.raw_keys ??
+        [],
 
       all_embeds_languages:
-        beta.all_embeds_languages ?? [],
+        beta.all_embeds_languages ??
+        [],
 
       all_embeds_urls:
-        beta.all_embeds_urls ?? 0,
+        beta.all_embeds_urls ??
+        0,
 
       all_embeds_valid:
-        beta.all_embeds_valid ?? 0,
+        beta.all_embeds_valid ??
+        0,
 
       all_embeds_discarded:
-        beta.all_embeds_discarded ?? 0,
+        beta.all_embeds_discarded ??
+        0,
 
       embeds_urls:
-        beta.embeds_urls ?? 0,
+        beta.embeds_urls ??
+        0,
 
       embeds_valid:
-        beta.embeds_valid ?? 0,
+        beta.embeds_valid ??
+        0,
 
       embeds_discarded:
-        beta.embeds_discarded ?? 0,
+        beta.embeds_discarded ??
+        0,
 
       error:
-        beta.error ?? null
+        beta.error ??
+        null
     },
 
     elapsed_ms:
-      Date.now() - started
+      Date.now() -
+      started
   });
 }
 
@@ -650,12 +842,18 @@ async function ingestContent({
  * SUPABASE CONFIG
  * ================================================================ */
 
-function getSupabaseConfig(env) {
+function getSupabaseConfig(
+  env
+) {
 
   const url =
     String(
-      env.SUPABASE_URL || ""
-    ).replace(/\/+$/, "");
+      env.SUPABASE_URL ||
+      ""
+    ).replace(
+      /\/+$/,
+      ""
+    );
 
 
   const key =
@@ -665,12 +863,15 @@ function getSupabaseConfig(env) {
 
 
   if (!url || !key) {
+
     return null;
   }
 
 
   return {
+
     url,
+
     key
   };
 }
@@ -680,7 +881,9 @@ function getSupabaseConfig(env) {
  * SUPABASE HEADERS
  * ================================================================ */
 
-function supabaseHeaders(supabase) {
+function supabaseHeaders(
+  supabase
+) {
 
   return {
 
@@ -700,7 +903,7 @@ function supabaseHeaders(supabase) {
 
 
 /* ================================================================
- * BUSCAR ENLACES EXISTENTES
+ * OBTENER EXISTENTES
  * ================================================================ */
 
 async function getExistingLinks({
@@ -754,16 +957,24 @@ async function getExistingLinks({
   try {
 
     const response =
-      await fetch(endpoint, {
+      await fetch(
+        endpoint,
+        {
 
-        method: "GET",
+          method:
+            "GET",
 
-        headers: {
-          ...supabaseHeaders(supabase),
-          "Prefer":
-            "return=representation"
+          headers: {
+
+            ...supabaseHeaders(
+              supabase
+            ),
+
+            "Prefer":
+              "return=representation"
+          }
         }
-      });
+      );
 
 
     const text =
@@ -774,9 +985,11 @@ async function getExistingLinks({
 
       return {
 
-        ok: false,
+        ok:
+          false,
 
-        links: [],
+        links:
+          [],
 
         error:
           `Supabase GET HTTP ${response.status}: ${text.slice(0, 500)}`
@@ -796,9 +1009,11 @@ async function getExistingLinks({
 
       return {
 
-        ok: false,
+        ok:
+          false,
 
-        links: [],
+        links:
+          [],
 
         error:
           "Supabase devolvió una respuesta que no es JSON."
@@ -808,7 +1023,8 @@ async function getExistingLinks({
 
     return {
 
-      ok: true,
+      ok:
+        true,
 
       links:
         Array.isArray(data)
@@ -820,9 +1036,11 @@ async function getExistingLinks({
 
     return {
 
-      ok: false,
+      ok:
+        false,
 
-      links: [],
+      links:
+        [],
 
       error:
         error?.message ||
@@ -848,23 +1066,29 @@ async function insertLinks({
   try {
 
     const response =
-      await fetch(endpoint, {
+      await fetch(
+        endpoint,
+        {
 
-        method: "POST",
+          method:
+            "POST",
 
-        headers: {
+          headers: {
 
-          ...supabaseHeaders(
-            supabase
-          ),
+            ...supabaseHeaders(
+              supabase
+            ),
 
-          "Prefer":
-            "return=minimal"
-        },
+            "Prefer":
+              "return=minimal"
+          },
 
-        body:
-          JSON.stringify(rows)
-      });
+          body:
+            JSON.stringify(
+              rows
+            )
+        }
+      );
 
 
     const text =
@@ -875,9 +1099,11 @@ async function insertLinks({
 
       return {
 
-        ok: false,
+        ok:
+          false,
 
-        inserted: 0,
+        inserted:
+          0,
 
         error:
           `Supabase POST HTTP ${response.status}: ${text.slice(0, 700)}`
@@ -887,7 +1113,8 @@ async function insertLinks({
 
     return {
 
-      ok: true,
+      ok:
+        true,
 
       inserted:
         rows.length
@@ -897,9 +1124,11 @@ async function insertLinks({
 
     return {
 
-      ok: false,
+      ok:
+        false,
 
-      inserted: 0,
+      inserted:
+        0,
 
       error:
         error?.message ||
@@ -926,8 +1155,12 @@ async function scrapeBeta({
 
 
   const base =
-    String(env.SOURCE_URL)
-      .replace(/\/+$/, "");
+    String(
+      env.SOURCE_URL
+    ).replace(
+      /\/+$/,
+      ""
+    );
 
 
   const params =
@@ -974,43 +1207,50 @@ async function scrapeBeta({
 
 
   /* --------------------------------------------------------------
-   * FETCH
+   * REQUEST
    * -------------------------------------------------------------- */
 
   try {
 
     response =
-      await fetch(endpoint, {
+      await fetch(
+        endpoint,
+        {
 
-        method: "GET",
+          method:
+            "GET",
 
-        redirect: "follow",
+          redirect:
+            "follow",
 
-        headers: {
+          headers: {
 
-          "Accept":
-            "application/json,text/plain,*/*",
+            "Accept":
+              "application/json,text/plain,*/*",
 
-          "Accept-Language":
-            "es-ES,es;q=0.9,en;q=0.8",
+            "Accept-Language":
+              "es-ES,es;q=0.9,en;q=0.8",
 
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-            "AppleWebKit/537.36 (KHTML, like Gecko) " +
-            "Chrome/131.0.0.0 Safari/537.36"
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+              "AppleWebKit/537.36 (KHTML, like Gecko) " +
+              "Chrome/131.0.0.0 Safari/537.36"
+          }
         }
-      });
+      );
 
   } catch (error) {
 
     return {
 
-      success: false,
+      success:
+        false,
 
       status:
         "request_error",
 
-      links: [],
+      links:
+        [],
 
       elapsed_ms:
         Date.now() -
@@ -1034,7 +1274,7 @@ async function scrapeBeta({
 
 
   /* --------------------------------------------------------------
-   * JSON
+   * PARSE JSON
    * -------------------------------------------------------------- */
 
   let data;
@@ -1049,12 +1289,14 @@ async function scrapeBeta({
 
     return {
 
-      success: false,
+      success:
+        false,
 
       status:
         "invalid_json",
 
-      links: [],
+      links:
+        [],
 
       http_code:
         response.status,
@@ -1066,9 +1308,11 @@ async function scrapeBeta({
         Date.now() -
         started,
 
-      raw_keys: [],
+      raw_keys:
+        [],
 
-      parser: null,
+      parser:
+        null,
 
       error:
         response.ok
@@ -1086,12 +1330,14 @@ async function scrapeBeta({
 
     return {
 
-      success: false,
+      success:
+        false,
 
       status:
         "http_error",
 
-      links: [],
+      links:
+        [],
 
       http_code:
         response.status,
@@ -1106,10 +1352,13 @@ async function scrapeBeta({
       raw_keys:
         objectKeys(data),
 
-      parser: null,
+      parser:
+        null,
 
       error:
-        extractErrorMessage(data)
+        extractErrorMessage(
+          data
+        )
     };
   }
 
@@ -1125,7 +1374,9 @@ async function scrapeBeta({
   if (
     data?.all_embeds &&
     typeof data.all_embeds === "object" &&
-    !Array.isArray(data.all_embeds)
+    !Array.isArray(
+      data.all_embeds
+    )
   ) {
 
     const diagnostics =
@@ -1144,7 +1395,8 @@ async function scrapeBeta({
 
       return {
 
-        success: true,
+        success:
+          true,
 
         status:
           "links_found",
@@ -1180,7 +1432,9 @@ async function scrapeBeta({
   if (
     data?.embeds &&
     typeof data.embeds === "object" &&
-    !Array.isArray(data.embeds)
+    !Array.isArray(
+      data.embeds
+    )
   ) {
 
     const diagnostics =
@@ -1207,7 +1461,8 @@ async function scrapeBeta({
 
       return {
 
-        success: true,
+        success:
+          true,
 
         status:
           "links_found",
@@ -1237,12 +1492,14 @@ async function scrapeBeta({
 
     return {
 
-      success: false,
+      success:
+        false,
 
       status:
         "no_embeds",
 
-      links: [],
+      links:
+        [],
 
       http_code:
         response.status,
@@ -1268,18 +1525,20 @@ async function scrapeBeta({
   }
 
 
-  /* ==============================================================
+  /* --------------------------------------------------------------
    * NO EMBEDS
-   * ============================================================== */
+   * -------------------------------------------------------------- */
 
   return {
 
-    success: false,
+    success:
+      false,
 
     status:
       "no_embeds",
 
-    links: [],
+    links:
+      [],
 
     http_code:
       response.status,
@@ -1291,24 +1550,32 @@ async function scrapeBeta({
       Date.now() -
       started,
 
-    parser: null,
+    parser:
+      null,
 
     raw_keys:
       rawKeys,
 
-    all_embeds_languages: [],
+    all_embeds_languages:
+      [],
 
-    all_embeds_urls: 0,
+    all_embeds_urls:
+      0,
 
-    all_embeds_valid: 0,
+    all_embeds_valid:
+      0,
 
-    all_embeds_discarded: 0,
+    all_embeds_discarded:
+      0,
 
-    embeds_urls: 0,
+    embeds_urls:
+      0,
 
-    embeds_valid: 0,
+    embeds_valid:
+      0,
 
-    embeds_discarded: 0,
+    embeds_discarded:
+      0,
 
     error:
       "Beta devolvió JSON pero no contiene all_embeds ni embeds."
@@ -1328,8 +1595,13 @@ function extractAllEmbeds(
 
 
   for (
-    const [language, servers]
-    of Object.entries(allEmbeds)
+    const [
+      language,
+      servers
+    ]
+    of Object.entries(
+      allEmbeds
+    )
   ) {
 
     if (
@@ -1348,8 +1620,13 @@ function extractAllEmbeds(
 
 
     for (
-      const [serverName, values]
-      of Object.entries(servers)
+      const [
+        serverName,
+        values
+      ]
+      of Object.entries(
+        servers
+      )
     ) {
 
       if (
@@ -1369,9 +1646,14 @@ function extractAllEmbeds(
             : [];
 
 
-      for (const url of urls) {
+      for (
+        const url
+        of urls
+      ) {
 
-        if (!isHttpUrl(url)) {
+        if (
+          !isHttpUrl(url)
+        ) {
           continue;
         }
 
@@ -1393,6 +1675,12 @@ function extractAllEmbeds(
   }
 
 
+  /*
+   * Aquí se elimina el segundo
+   * servidor repetido dentro
+   * del mismo idioma.
+   */
+
   return deduplicateLinks(
     result
   );
@@ -1412,8 +1700,13 @@ function extractEmbedsFallback(
 
 
   for (
-    const [serverName, values]
-    of Object.entries(embeds)
+    const [
+      serverName,
+      values
+    ]
+    of Object.entries(
+      embeds
+    )
   ) {
 
     if (
@@ -1433,9 +1726,14 @@ function extractEmbedsFallback(
           : [];
 
 
-    for (const url of urls) {
+    for (
+      const url
+      of urls
+    ) {
 
-      if (!isHttpUrl(url)) {
+      if (
+        !isHttpUrl(url)
+      ) {
         continue;
       }
 
@@ -1480,8 +1778,13 @@ function countAllEmbeds(
 
 
   for (
-    const [language, servers]
-    of Object.entries(allEmbeds)
+    const [
+      language,
+      servers
+    ]
+    of Object.entries(
+      allEmbeds
+    )
   ) {
 
     languages.push(
@@ -1499,8 +1802,13 @@ function countAllEmbeds(
 
 
     for (
-      const [serverName, values]
-      of Object.entries(servers)
+      const [
+        serverName,
+        values
+      ]
+      of Object.entries(
+        servers
+      )
     ) {
 
       const list =
@@ -1511,7 +1819,10 @@ function countAllEmbeds(
             : [];
 
 
-      for (const url of list) {
+      for (
+        const url
+        of list
+      ) {
 
         urls++;
 
@@ -1567,8 +1878,13 @@ function countEmbeds(
 
 
   for (
-    const [serverName, values]
-    of Object.entries(embeds)
+    const [
+      serverName,
+      values
+    ]
+    of Object.entries(
+      embeds
+    )
   ) {
 
     const list =
@@ -1579,7 +1895,10 @@ function countEmbeds(
           : [];
 
 
-    for (const url of list) {
+    for (
+      const url
+      of list
+    ) {
 
       urls++;
 
@@ -1616,7 +1935,7 @@ function countEmbeds(
 
 
 /* ================================================================
- * DEDUPLICAR
+ * DEDUPLICACIÓN POR IDIOMA + SERVIDOR
  * ================================================================ */
 
 function deduplicateLinks(
@@ -1627,18 +1946,44 @@ function deduplicateLinks(
     new Map();
 
 
-  for (const link of links) {
+  for (
+    const link
+    of links
+  ) {
 
-    if (!isValidLink(link)) {
+    if (
+      !isValidLink(link)
+    ) {
       continue;
     }
 
 
+    /*
+     * IMPORTANTE:
+     *
+     * Ya NO usamos:
+     *
+     * idioma + URL
+     *
+     * Usamos:
+     *
+     * idioma + servidor
+     *
+     * De esta manera solamente
+     * queda un servidor de cada
+     * tipo dentro de cada idioma.
+     */
+
     const key =
-      `${link.idioma}|${link.url_embed}`;
+      makeServerLanguageKey(
+        link.idioma,
+        link.servidor
+      );
 
 
-    if (!map.has(key)) {
+    if (
+      !map.has(key)
+    ) {
 
       map.set(
         key,
@@ -1655,6 +2000,58 @@ function deduplicateLinks(
 
 
 /* ================================================================
+ * CREAR CLAVE IDIOMA + SERVIDOR
+ * ================================================================ */
+
+function makeServerLanguageKey(
+  idioma,
+  servidor
+) {
+
+  const normalizedLanguage =
+    normalizeKey(
+      idioma
+    );
+
+
+  const normalizedServer =
+    normalizeKey(
+      servidor
+    );
+
+
+  return (
+    `${normalizedLanguage}|${normalizedServer}`
+  );
+}
+
+
+/* ================================================================
+ * NORMALIZAR CLAVE
+ * ================================================================ */
+
+function normalizeKey(
+  value
+) {
+
+  return String(
+    value || ""
+  )
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(
+      /[\u0300-\u036f]/g,
+      ""
+    )
+    .replace(
+      /[\s_-]+/g,
+      ""
+    );
+}
+
+
+/* ================================================================
  * VALIDAR LINK
  * ================================================================ */
 
@@ -1663,11 +2060,16 @@ function isValidLink(
 ) {
 
   return !!(
+
     link &&
-    typeof link === "object" &&
+
+    typeof link ===
+      "object" &&
+
     isHttpUrl(
       link.url_embed
     ) &&
+
     !isBlacklisted(
       link.servidor
     )
@@ -1676,7 +2078,7 @@ function isValidLink(
 
 
 /* ================================================================
- * VALIDAR HTTP URL
+ * VALIDAR URL
  * ================================================================ */
 
 function isHttpUrl(
@@ -1684,8 +2086,13 @@ function isHttpUrl(
 ) {
 
   return (
-    typeof value === "string" &&
-    /^https?:\/\//i.test(value)
+
+    typeof value ===
+      "string" &&
+
+    /^https?:\/\//i.test(
+      value
+    )
   );
 }
 
@@ -1699,30 +2106,28 @@ function isBlacklisted(
 ) {
 
   const normalized =
-    String(server || "")
-      .trim()
-      .toLowerCase()
-      .replace(
-        /[\s_-]+/g,
-        ""
-      );
+    normalizeKey(
+      server
+    );
 
 
   return BLACKLIST.some(
     blocked => {
 
       const b =
-        blocked
-          .toLowerCase()
-          .replace(
-            /[\s_-]+/g,
-            ""
-          );
+        normalizeKey(
+          blocked
+        );
 
 
       return (
-        normalized === b ||
-        normalized.startsWith(b)
+
+        normalized ===
+          b ||
+
+        normalized.startsWith(
+          b
+        )
       );
     }
   );
@@ -1738,7 +2143,9 @@ function normalizeServerName(
 ) {
 
   const value =
-    String(server || "")
+    String(
+      server || ""
+    )
       .trim()
       .toLowerCase();
 
@@ -1809,7 +2216,9 @@ function normalizeLanguage(
 ) {
 
   const value =
-    String(language || "")
+    String(
+      language || ""
+    )
       .trim()
       .toLowerCase();
 
@@ -1873,12 +2282,16 @@ function capitalize(
 ) {
 
   if (!value) {
+
     return "Desconocido";
   }
 
 
   return (
-    value.charAt(0).toUpperCase() +
+
+    value.charAt(0)
+      .toUpperCase() +
+
     value.slice(1)
   );
 }
@@ -1893,17 +2306,24 @@ function objectKeys(
 ) {
 
   return (
+
     value &&
-    typeof value === "object" &&
+
+    typeof value ===
+      "object" &&
+
     !Array.isArray(value)
+
   )
+
     ? Object.keys(value)
+
     : [];
 }
 
 
 /* ================================================================
- * EXTRAER ERROR
+ * ERROR
  * ================================================================ */
 
 function extractErrorMessage(
@@ -1911,7 +2331,8 @@ function extractErrorMessage(
 ) {
 
   if (
-    typeof data === "string"
+    typeof data ===
+      "string"
   ) {
 
     return data.slice(
@@ -1923,19 +2344,26 @@ function extractErrorMessage(
 
   if (
     data &&
-    typeof data === "object"
+    typeof data ===
+      "object"
   ) {
 
     return (
+
       data.message ||
+
       data.error ||
+
       data.msg ||
+
       "Respuesta HTTP no válida."
     );
   }
 
 
-  return "Respuesta HTTP no válida.";
+  return (
+    "Respuesta HTTP no válida."
+  );
 }
 
 
@@ -1960,9 +2388,13 @@ function isTrue(
     "force"
 
   ].includes(
-    String(value || "")
+
+    String(
+      value || ""
+    )
       .trim()
       .toLowerCase()
+
   );
 }
 
