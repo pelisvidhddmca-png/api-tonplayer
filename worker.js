@@ -9,7 +9,6 @@
  *   BETA_KV  -> Beta,  TTL 6h
  *
  * Variables:
- *   API_KEY
  *   SUPABASE_URL
  *   SUPABASE_ANON_KEY
  *   SOURCE_URL
@@ -34,7 +33,7 @@ const BLACKLIST = [
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization"
+  "Access-Control-Allow-Headers": "Content-Type"
 };
 
 export default {
@@ -77,15 +76,6 @@ async function router(request, env, ctx) {
     });
   }
 
-  if (!authorized(request, env)) {
-    return jsonResponse({
-      success: false,
-      status: "unauthorized",
-      event: "complete",
-      message: "API key inválida o ausente."
-    }, 401);
-  }
-
   const fallbackBeta = isBetaFallback(url.searchParams.get("fallback"));
   const force = isTrue(url.searchParams.get("force"));
 
@@ -122,14 +112,6 @@ async function router(request, env, ctx) {
   }, 404);
 }
 
-function authorized(request, env) {
-  if (!env.API_KEY) return false;
-
-  const auth = request.headers.get("Authorization") || "";
-  const match = auth.match(/^Bearer\s+(.+)$/i);
-
-  return !!match && match[1].trim() === env.API_KEY;
-}
 
 async function processContent({
   env,
