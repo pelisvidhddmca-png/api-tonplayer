@@ -26,8 +26,6 @@ const BLACKLIST = [
   "servidormahoutokoro",
   "servidordeathstar",
   "servidorgoldmember",
-  "powvideo",
-  "streamplay"
 ];
 
 const CORS = {
