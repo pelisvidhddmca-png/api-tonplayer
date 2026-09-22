@@ -26,12 +26,14 @@ const BLACKLIST = [
   "servidormahoutokoro",
   "servidordeathstar",
   "servidorgoldmember",
+  "powvideo",
+  "streamplay"
 ];
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type"
+  "Access-Control-Allow-Headers": "Content-Type, Authorization"
 };
 
 export default {
@@ -969,7 +971,16 @@ function deduplicateLinks(links) {
     }
   }
 
-  return Array.from(map.values());
+  const result = Array.from(map.values());
+
+  // Vimeus tiene prioridad: si existe, siempre aparece primero.
+  result.sort((a, b) => {
+    const aPriority = normalizeKey(a.servidor) === "vimeus" ? 0 : 1;
+    const bPriority = normalizeKey(b.servidor) === "vimeus" ? 0 : 1;
+    return aPriority - bPriority;
+  });
+
+  return result;
 }
 
 function isValidLink(link) {
@@ -1035,7 +1046,8 @@ function normalizeServerName(server) {
     streamplay: "Streamplay",
     streamtape: "Streamtape",
     vidmoly: "Vidmoly",
-    vimeos: "Vimeos"
+    vimeus: "Vimeus",
+    vimeos: "Vimeus"
   };
 
   return map[base] || capitalize(base);
