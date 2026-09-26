@@ -1,13 +1,18 @@
 /*
  * CONTENT WORKER
  *
- * Alpha = NSR (sources -> resolve -> playUrl)
- * Beta  = PelixPlay scraper (automático si Alpha queda sin enlaces, o ?fallback=beta)
- * Gamma = Supabase (fallback final para contenido que no aparece en Alpha/Beta)
+ * Alpha = PelixPlay scraper
+ * Beta  = Supabase
+ * Gamma = NSR (sources -> resolve -> playUrl)
+ *
+ * Flujo normal:
+ *   1) Alpha/PelixPlay + Beta/Supabase en paralelo
+ *   2) Si Beta encontró servidores, sus servidores van primero
+ *   3) Si Alpha + Beta no encuentran nada -> Gamma/NSR
  *
  * KV:
- *   ALPHA_KV -> NSR, TTL 5 min
- *   BETA_KV  -> PelixPlay, TTL 6h
+ *   ALPHA_KV -> PelixPlay, TTL 6h
+ *   BETA_KV  -> Supabase, TTL 6h
  *
  * Variables:
  *   NSR_API_KEY
@@ -20,7 +25,7 @@
  *   BETA_KV
  */
 
-const ALPHA_CACHE_TTL = 5 * 60;
+const ALPHA_CACHE_TTL = 6 * 60 * 60;
 const BETA_CACHE_TTL  = 6 * 60 * 60;
 
 const BLACKLIST = [
@@ -115,143 +120,238 @@ async function router(request, env, ctx) {
 }
 
 
+
 async function processContent({
   env, ctx, tmdbId, type, season, episode, fallbackBeta, force
 }) {
   const { writer, response } = createSSE();
 
+  await sendSSE(writer, "connected", {
+    success: true,
+    status: "connected",
+    mode: fallbackBeta ? "alpha_fallback" : "alpha_beta_parallel",
+    tmdb_id: tmdbId,
+    type,
+    season,
+    episode
+  });
+
+  /*
+   * fallback=beta conserva el comportamiento histórico:
+   * ejecutar directamente Alpha/PelixPlay.
+   */
   if (fallbackBeta) {
-    await sendSSE(writer, "connected", {
-      success: true, status: "connected", mode: "beta_fallback",
-      tmdb_id: tmdbId, type, season, episode
+    await sendSSE(writer, "alpha_search", {
+      success: true,
+      status: "searching_alpha",
+      source: "Alpha",
+      provider: "PelixPlay",
+      mode: "fallback"
     });
 
-    const betaLinks = await runBeta({
-      env, ctx, writer, tmdbId, type, season, episode, force
+    const alpha = await runAlpha({
+      env, ctx, tmdbId, type, season, episode, force
     });
 
-    if (betaLinks.length === 0) {
-      await sendSSE(writer, "complete", {
-        success: false, status: "source_unavailable", event: "complete",
-        source: "Beta", provider: "PelixPlay", fallback: null,
-        tmdb_id: tmdbId, type, season, episode,
-        alpha_found: 0, beta_found: 0, gamma_found: 0,
-        beta_queried: true, gamma_queried: false, found: 0, links: []
-      });
-    }
+    const alphaLinks = prioritizeVimeus(
+      deduplicateLinks((alpha.links || []).filter(isValidLink))
+    );
+
+    await sendSSE(writer, "alpha_found", {
+      success: alphaLinks.length > 0,
+      status: alphaLinks.length > 0 ? "alpha_found" : "alpha_unavailable",
+      source: "Alpha",
+      provider: "PelixPlay",
+      found: alphaLinks.length,
+      links: alphaLinks,
+      http_code: alpha.http_code ?? null,
+      content_type: alpha.content_type ?? null,
+      elapsed_ms: alpha.elapsed_ms ?? null,
+      parser: alpha.parser ?? "pelixplay_scraper",
+      cache: alpha.cache ?? "miss",
+      error: alpha.error ?? null
+    });
+
+    await sendSSE(writer, "complete", {
+      success: alphaLinks.length > 0,
+      status: alphaLinks.length > 0 ? "success" : "source_unavailable",
+      event: "complete",
+      source: alphaLinks.length > 0 ? "Alpha" : null,
+      provider: alphaLinks.length > 0 ? "PelixPlay" : null,
+      fallback: null,
+      tmdb_id: tmdbId,
+      type,
+      season,
+      episode,
+      alpha_found: alphaLinks.length,
+      beta_found: 0,
+      gamma_found: 0,
+      beta_queried: false,
+      gamma_queried: false,
+      found: alphaLinks.length,
+      links: alphaLinks
+    });
 
     writer.close();
     return response;
   }
 
-  await sendSSE(writer, "connected", {
-    success: true, status: "connected", mode: "alpha_beta_gamma",
-    tmdb_id: tmdbId, type, season, episode
-  });
+  /*
+   * Alpha (PelixPlay) y Beta (Supabase) se ejecutan en paralelo.
+   * No esperamos a Alpha para iniciar Beta ni viceversa.
+   */
+  await Promise.all([
+    sendSSE(writer, "alpha_search", {
+      success: true,
+      status: "searching_alpha",
+      source: "Alpha",
+      provider: "PelixPlay"
+    }),
+    sendSSE(writer, "beta_search", {
+      success: true,
+      status: "searching_beta",
+      source: "Beta",
+      provider: "Supabase"
+    })
+  ]);
 
-  await sendSSE(writer, "alpha_search", {
-    success: true, status: "searching_alpha", source: "Alpha", provider: "NSR"
-  });
+  const [alpha, beta] = await Promise.all([
+    runAlpha({ env, ctx, tmdbId, type, season, episode, force }),
+    runBeta({ env, ctx, tmdbId, type, season, episode, force })
+  ]);
 
-  const alphaKey = buildAlphaCacheKey(type, tmdbId, season, episode);
-  let alpha = null;
-  let alphaCacheStatus = "miss";
+  const alphaLinks = prioritizeVimeus(
+    deduplicateLinks((alpha.links || []).filter(isValidLink))
+  );
 
-  if (!force && env.ALPHA_KV) {
-    const cached = await env.ALPHA_KV.get(alphaKey, "json");
-    if (cached && Array.isArray(cached.links)) {
-      const links = prioritizeVimeus(deduplicateLinks(cached.links.filter(isValidLink)));
-      if (links.length > 0) {
-        alphaCacheStatus = "hit";
-        await sendSSE(writer, "alpha_cache_hit", {
-          success: true, status: "alpha_cache_hit", source: "Alpha", provider: "NSR",
-          found: links.length, ttl_seconds: ALPHA_CACHE_TTL
-        });
-        alpha = { success: true, links, elapsed_ms: 0, error: null, mode: "kv" };
-      }
-    }
-  }
+  const betaLinks = prioritizeVimeus(
+    deduplicateLinks((beta.links || []).filter(isValidLink))
+  );
 
-  if (!alpha) {
-    await sendSSE(writer, "alpha_cache_miss", {
-      success: true, status: "alpha_cache_miss", source: "Alpha", provider: "NSR",
-      force,
-      message: force ? "force=true: se ignora ALPHA_KV."
-        : env.ALPHA_KV ? "No existe un resultado válido en ALPHA_KV."
-        : "ALPHA_KV no está configurado."
-    });
-
-    alpha = await runAlpha({ env, tmdbId, type, season, episode });
-    alpha.links = prioritizeVimeus(deduplicateLinks((alpha.links || []).filter(isValidLink)));
-
-    if (env.ALPHA_KV && alpha.links.length > 0) {
-      ctx.waitUntil(env.ALPHA_KV.put(
-        alphaKey,
-        JSON.stringify({ links: alpha.links, cached_at: Date.now() }),
-        { expirationTtl: ALPHA_CACHE_TTL }
-      ));
-    }
-  }
-
-  const alphaLinks = prioritizeVimeus(deduplicateLinks((alpha.links || []).filter(isValidLink)));
+  /*
+   * Beta/Supabase tiene prioridad sobre Alpha/PelixPlay:
+   * si Beta encontró un servidor, su enlace queda primero.
+   * La deduplicación por idioma+servidor hace que Beta gane también
+   * cuando ambas fuentes tienen exactamente el mismo servidor.
+   */
+  const combinedLinks = deduplicateLinks([
+    ...prioritizeVimeus(betaLinks),
+    ...prioritizeVimeus(alphaLinks)
+  ]);
 
   await sendSSE(writer, "alpha_found", {
     success: alphaLinks.length > 0,
     status: alphaLinks.length > 0 ? "alpha_found" : "alpha_unavailable",
-    source: "Alpha", provider: "NSR", found: alphaLinks.length, links: alphaLinks,
-    cache: alphaCacheStatus, http_code: alpha.http_code ?? null,
-    content_type: alpha.content_type ?? null, elapsed_ms: alpha.elapsed_ms ?? null,
-    parser: alpha.parser ?? "nsr_sources_resolve",
-    sources_received: alpha.sources_received ?? 0, tokens_found: alpha.tokens_found ?? 0,
-    resolved: alpha.resolved ?? 0, resolve_errors: alpha.resolve_errors ?? 0,
+    source: "Alpha",
+    provider: "PelixPlay",
+    found: alphaLinks.length,
+    links: alphaLinks,
+    cache: alpha.cache ?? "miss",
+    http_code: alpha.http_code ?? null,
+    content_type: alpha.content_type ?? null,
+    elapsed_ms: alpha.elapsed_ms ?? null,
+    parser: alpha.parser ?? "pelixplay_scraper",
+    raw_keys: alpha.raw_keys ?? [],
+    all_embeds_languages: alpha.all_embeds_languages ?? [],
+    all_embeds_urls: alpha.all_embeds_urls ?? 0,
+    all_embeds_valid: alpha.all_embeds_valid ?? 0,
+    all_embeds_discarded: alpha.all_embeds_discarded ?? 0,
+    embeds_urls: alpha.embeds_urls ?? 0,
+    embeds_valid: alpha.embeds_valid ?? 0,
+    embeds_discarded: alpha.embeds_discarded ?? 0,
     error: alpha.error ?? null
   });
 
-  if (alphaLinks.length > 0) {
+  await sendSSE(writer, "beta_found", {
+    success: betaLinks.length > 0,
+    status: betaLinks.length > 0 ? "beta_found" : "beta_unavailable",
+    source: "Beta",
+    provider: "Supabase",
+    found: betaLinks.length,
+    links: betaLinks,
+    cache: beta.cache ?? "miss",
+    http_code: beta.http_code ?? null,
+    content_type: beta.content_type ?? null,
+    elapsed_ms: beta.elapsed_ms ?? null,
+    parser: beta.parser ?? "supabase_rest",
+    rows_received: beta.rows_received ?? 0,
+    rows_valid: beta.rows_valid ?? 0,
+    rows_discarded: beta.rows_discarded ?? 0,
+    error: beta.error ?? null
+  });
+
+  if (combinedLinks.length > 0) {
     await sendSSE(writer, "complete", {
-      success: true, status: "success", event: "complete",
-      source: "Alpha", provider: "NSR", fallback: "Beta",
-      tmdb_id: tmdbId, type, season, episode,
-      alpha_found: alphaLinks.length, beta_found: 0, gamma_found: 0,
-      beta_queried: false, gamma_queried: false, found: alphaLinks.length,
-      links: alphaLinks, alpha_cache: alphaCacheStatus, alpha_error: alpha.error ?? null
+      success: true,
+      status: "success",
+      event: "complete",
+      source: betaLinks.length > 0 ? "Beta" : "Alpha",
+      provider: betaLinks.length > 0 ? "Supabase" : "PelixPlay",
+      fallback: "Gamma",
+      tmdb_id: tmdbId,
+      type,
+      season,
+      episode,
+      alpha_found: alphaLinks.length,
+      beta_found: betaLinks.length,
+      gamma_found: 0,
+      beta_queried: true,
+      gamma_queried: false,
+      found: combinedLinks.length,
+      links: combinedLinks,
+      priority: betaLinks.length > 0
+        ? "Beta/Supabase primero, luego Alpha/PelixPlay"
+        : "Alpha/PelixPlay"
     });
+
     writer.close();
     return response;
   }
 
-  await sendSSE(writer, "beta_auto_fallback", {
-    success: true, status: "alpha_empty_beta_starting",
-    source: "Beta", provider: "PelixPlay", reason: "alpha_found_0",
-    message: "Alpha/NSR no encontró servidores; se inicia Beta/PelixPlay."
-  });
-
-  const betaLinks = await runBeta({
-    env, ctx, writer, tmdbId, type, season, episode, force
-  });
-
-  if (betaLinks.length > 0) {
-    writer.close();
-    return response;
-  }
-
+  /*
+   * Solo si Alpha + Beta no encontraron absolutamente nada,
+   * se activa Gamma/NSR.
+   */
   await sendSSE(writer, "gamma_auto_fallback", {
-    success: true, status: "beta_empty_gamma_starting",
-    source: "Gamma", provider: "Supabase", reason: "beta_found_0",
-    message: "Beta/PelixPlay no encontró servidores; se consulta Gamma/Supabase."
+    success: true,
+    status: "alpha_beta_empty_gamma_starting",
+    source: "Gamma",
+    provider: "NSR",
+    reason: "alpha_found_0_beta_found_0",
+    message: "Alpha/PelixPlay y Beta/Supabase no encontraron servidores; se consulta Gamma/NSR."
   });
 
-  const gamma = await runGamma({ env, writer, tmdbId, type, season, episode });
-  const gammaLinks = prioritizeVimeus(deduplicateLinks((gamma.links || []).filter(isValidLink)));
+  await sendSSE(writer, "gamma_search", {
+    success: true,
+    status: "searching_gamma",
+    source: "Gamma",
+    provider: "NSR"
+  });
+
+  const gamma = await runGamma({
+    env, tmdbId, type, season, episode
+  });
+
+  const gammaLinks = prioritizeVimeus(
+    deduplicateLinks((gamma.links || []).filter(isValidLink))
+  );
 
   await sendSSE(writer, "gamma_found", {
     success: gammaLinks.length > 0,
     status: gammaLinks.length > 0 ? "gamma_found" : "gamma_unavailable",
-    source: "Gamma", provider: "Supabase", found: gammaLinks.length, links: gammaLinks,
-    http_code: gamma.http_code ?? null, content_type: gamma.content_type ?? null,
-    elapsed_ms: gamma.elapsed_ms ?? null, parser: gamma.parser ?? "supabase_rest",
-    rows_received: gamma.rows_received ?? 0, rows_valid: gamma.rows_valid ?? 0,
-    rows_discarded: gamma.rows_discarded ?? 0, error: gamma.error ?? null
+    source: "Gamma",
+    provider: "NSR",
+    found: gammaLinks.length,
+    links: gammaLinks,
+    http_code: gamma.http_code ?? null,
+    content_type: gamma.content_type ?? null,
+    elapsed_ms: gamma.elapsed_ms ?? null,
+    parser: gamma.parser ?? "nsr_sources_resolve",
+    sources_received: gamma.sources_received ?? 0,
+    tokens_found: gamma.tokens_found ?? 0,
+    resolved: gamma.resolved ?? 0,
+    resolve_errors: gamma.resolve_errors ?? 0,
+    error: gamma.error ?? null
   });
 
   await sendSSE(writer, "complete", {
@@ -259,182 +359,86 @@ async function processContent({
     status: gammaLinks.length > 0 ? "success" : "source_unavailable",
     event: "complete",
     source: gammaLinks.length > 0 ? "Gamma" : null,
-    provider: gammaLinks.length > 0 ? "Supabase" : null,
-    fallback: null, tmdb_id: tmdbId, type, season, episode,
-    alpha_found: 0, beta_found: 0, gamma_found: gammaLinks.length,
-    beta_queried: true, gamma_queried: true, found: gammaLinks.length,
-    links: gammaLinks, gamma_error: gamma.error ?? null
+    provider: gammaLinks.length > 0 ? "NSR" : null,
+    fallback: null,
+    tmdb_id: tmdbId,
+    type,
+    season,
+    episode,
+    alpha_found: 0,
+    beta_found: 0,
+    gamma_found: gammaLinks.length,
+    beta_queried: true,
+    gamma_queried: true,
+    found: gammaLinks.length,
+    links: gammaLinks
   });
 
   writer.close();
   return response;
 }
 
-/*
- * Ejecuta Beta usando BETA_KV antes del scraper.
- */
-async function runBeta({
+
+async function runNsr({
   env,
   ctx,
-  writer,
   tmdbId,
   type,
   season,
   episode,
   force
 }) {
-  const betaKey = buildBetaCacheKey(
-    type, tmdbId, season, episode
-  );
+  const alphaKey = buildAlphaCacheKey(type, tmdbId, season, episode);
 
-  let beta = null;
-  let betaCacheStatus = "miss";
-
-  if (!force && env.BETA_KV) {
-    const cached = await env.BETA_KV.get(betaKey, "json");
+  if (!force && env.ALPHA_KV) {
+    const cached = await env.ALPHA_KV.get(alphaKey, "json");
 
     if (cached && Array.isArray(cached.links)) {
-      const links = deduplicateLinks(
-        cached.links.filter(isValidLink)
+      const links = prioritizeVimeus(
+        deduplicateLinks(cached.links.filter(isValidLink))
       );
 
       if (links.length > 0) {
-        betaCacheStatus = "hit";
-
-        await sendSSE(writer, "beta_cache_hit", {
-          success: true,
-          status: "beta_cache_hit",
-          source: "Beta",
-          provider: "PelixPlay",
-          found: links.length,
-          ttl_seconds: BETA_CACHE_TTL
-        });
-
-        beta = {
+        return {
           success: true,
           links,
           elapsed_ms: 0,
           error: null,
-          mode: "kv"
+          mode: "kv",
+          cache: "hit",
+          parser: "pelixplay_scraper"
         };
       }
     }
   }
 
-  if (!beta) {
-    await sendSSE(writer, "beta_cache_miss", {
-      success: true,
-      status: "beta_cache_miss",
-      source: "Beta",
-      force,
-      message: force
-        ? "force=true: se ignora BETA_KV."
-        : env.BETA_KV
-          ? "No existe un resultado válido en BETA_KV."
-          : "BETA_KV no está configurado."
-    });
-
-    await sendSSE(writer, "beta_search", {
-      success: true,
-      status: "searching_beta",
-      source: "Beta",
-      provider: "PelixPlay"
-    });
-
-    beta = await scrapeBeta({
-      env,
-      tmdbId,
-      type,
-      season,
-      episode
-    });
-
-    const links = beta.success
-      ? deduplicateLinks(beta.links.filter(isValidLink))
-      : [];
-
-    beta.links = links;
-
-    /*
-     * Solo se cachean resultados positivos.
-     * Los resultados vacíos no se almacenan durante 6h.
-     */
-    if (env.BETA_KV && links.length > 0) {
-      ctx.waitUntil(
-        env.BETA_KV.put(
-          betaKey,
-          JSON.stringify({
-            links,
-            cached_at: Date.now()
-          }),
-          { expirationTtl: BETA_CACHE_TTL }
-        )
-      );
-    }
-  }
-
-  const betaLinks = deduplicateLinks(
-    (beta.links || []).filter(isValidLink)
-  );
-
-  await sendSSE(writer, "beta_found", {
-    success: betaLinks.length > 0,
-    status: betaLinks.length > 0
-      ? "beta_found"
-      : "beta_unavailable",
-    source: "Beta",
-    provider: "PelixPlay",
-    found: betaLinks.length,
-    links: betaLinks,
-    cache: betaCacheStatus,
-    http_code: beta.http_code ?? null,
-    content_type: beta.content_type ?? null,
-    elapsed_ms: beta.elapsed_ms ?? null,
-    parser: beta.parser ?? null,
-    raw_keys: beta.raw_keys ?? [],
-    all_embeds_languages: beta.all_embeds_languages ?? [],
-    all_embeds_urls: beta.all_embeds_urls ?? 0,
-    all_embeds_valid: beta.all_embeds_valid ?? 0,
-    all_embeds_discarded: beta.all_embeds_discarded ?? 0,
-    embeds_urls: beta.embeds_urls ?? 0,
-    embeds_valid: beta.embeds_valid ?? 0,
-    embeds_discarded: beta.embeds_discarded ?? 0,
-    error: beta.error ?? null
+  const result = await scrapeAlpha({
+    env, tmdbId, type, season, episode
   });
 
-  if (betaLinks.length > 0) {
-    await sendSSE(writer, "complete", {
-      success: true,
-      status: "success",
-      event: "complete",
-      source: "Beta",
-      provider: "PelixPlay",
-      fallback: "Gamma",
-      tmdb_id: tmdbId,
-      type,
-      season,
-      episode,
-      alpha_found: 0,
-      beta_found: betaLinks.length,
-      gamma_found: 0,
-      beta_queried: true,
-      gamma_queried: false,
-      found: betaLinks.length,
-      links: betaLinks,
-      beta_cache: betaCacheStatus,
-      beta_error: beta.error ?? null
-    });
+  const links = prioritizeVimeus(
+    deduplicateLinks((result.links || []).filter(isValidLink))
+  );
+
+  if (env.ALPHA_KV && links.length > 0) {
+    ctx.waitUntil(
+      env.ALPHA_KV.put(
+        alphaKey,
+        JSON.stringify({
+          links,
+          cached_at: Date.now()
+        }),
+        { expirationTtl: ALPHA_CACHE_TTL }
+      )
+    );
   }
 
-  return betaLinks;
+  return {
+    ...result,
+    links,
+    cache: "miss"
+  };
 }
-
-/*
- * ==================================================================
- * ALPHA / SUPABASE
- * ==================================================================
- */
-
 
 async function runAlpha({ env, tmdbId, type, season, episode }) {
   const started = Date.now();
@@ -608,14 +612,71 @@ function findValue(data, keys) {
   return null;
 }
 
-async function runGamma({ env, writer, tmdbId, type, season, episode }) {
-  await sendSSE(writer, "gamma_search", {
-    success: true, status: "searching_gamma", source: "Gamma", provider: "Supabase"
+
+
+
+async function runBeta({
+  env,
+  ctx,
+  tmdbId,
+  type,
+  season,
+  episode,
+  force
+}) {
+  const betaKey = buildBetaCacheKey(type, tmdbId, season, episode);
+
+  if (!force && env.BETA_KV) {
+    const cached = await env.BETA_KV.get(betaKey, "json");
+
+    if (cached && Array.isArray(cached.links)) {
+      const links = prioritizeVimeus(
+        deduplicateLinks(cached.links.filter(isValidLink))
+      );
+
+      if (links.length > 0) {
+        return {
+          success: true,
+          links,
+          elapsed_ms: 0,
+          error: null,
+          mode: "kv",
+          cache: "hit",
+          parser: "supabase_rest"
+        };
+      }
+    }
+  }
+
+  const result = await fetchBetaFromSupabase({
+    env, tmdbId, type, season, episode
   });
-  return fetchGammaFromSupabase({ env, tmdbId, type, season, episode });
+
+  const links = prioritizeVimeus(
+    deduplicateLinks((result.links || []).filter(isValidLink))
+  );
+
+  if (env.BETA_KV && links.length > 0) {
+    ctx.waitUntil(
+      env.BETA_KV.put(
+        betaKey,
+        JSON.stringify({
+          links,
+          cached_at: Date.now()
+        }),
+        { expirationTtl: BETA_CACHE_TTL }
+      )
+    );
+  }
+
+  return {
+    ...result,
+    links,
+    cache: "miss"
+  };
 }
 
-async function fetchGammaFromSupabase({
+async function fetchBetaFromSupabase({
   env,
   tmdbId,
   type,
@@ -762,10 +823,10 @@ async function fetchGammaFromSupabase({
  * BETA / SCRAPER
  * ==================================================================
  *
- * Conserva /embed/api.php como slug principal.
+ * Conserva /embed/api.php como endpoint principal de PelixPlay.
  */
 
-async function scrapeBeta({
+async function scrapeAlpha({
   env,
   tmdbId,
   type,
@@ -839,8 +900,8 @@ async function scrapeBeta({
       raw_keys: [],
       parser: null,
       error: response.ok
-        ? "Beta devolvió una respuesta que no es JSON."
-        : `Beta respondió HTTP ${response.status}.`
+        ? "PelixPlay devolvió una respuesta que no es JSON."
+        : `PelixPlay respondió HTTP ${response.status}.`
     };
   }
 
@@ -918,7 +979,7 @@ async function scrapeBeta({
       parser: "embeds",
       raw_keys: rawKeys,
       ...diagnostics,
-      error: "Beta respondió JSON pero no quedaron URLs válidas."
+      error: "PelixPlay respondió JSON pero no quedaron URLs válidas."
     };
   }
 
@@ -938,7 +999,7 @@ async function scrapeBeta({
     embeds_urls: 0,
     embeds_valid: 0,
     embeds_discarded: 0,
-    error: "Beta devolvió JSON pero no contiene all_embeds ni embeds."
+    error: "PelixPlay devolvió JSON pero no contiene all_embeds ni embeds."
   };
 }
 
@@ -1205,17 +1266,17 @@ function capitalize(value) {
 
 function buildAlphaCacheKey(type, tmdbId, season, episode) {
   return type === "movie"
-    ? `alpha:nsr:movie:${tmdbId}`
-    : `alpha:nsr:tv:${tmdbId}:${season}:${episode}`;
+    ? `alpha:pelixplay:movie:${tmdbId}`
+    : `alpha:pelixplay:tv:${tmdbId}:${season}:${episode}`;
 }
 
 function buildBetaCacheKey(type, tmdbId, season, episode) {
   return type === "movie"
-    ? `beta:pelixplay:movie:${tmdbId}`
-    : `beta:pelixplay:tv:${tmdbId}:${season}:${episode}`;
+    ? `beta:supabase:movie:${tmdbId}`
+    : `beta:supabase:tv:${tmdbId}:${season}:${episode}`;
 }
 
-function buildBetaEndpoint(
+function buildAlphaEndpoint(
   tmdbId,
   type,
   season,
