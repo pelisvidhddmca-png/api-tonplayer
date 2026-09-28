@@ -227,7 +227,6 @@ async function router(request, env, ctx) {
 /* ================================================================
  * PROCESS CONTENT
  * ================================================================ */
-
 async function processContent({
   env,
   ctx,
@@ -239,52 +238,17 @@ async function processContent({
   force
 }) {
 
-  const {
-    writer,
-    response
-  } = createSSE();
-
-
   /*
    * ==============================================================
    * FALLBACK=BETA
    * ==============================================================
    *
-   * Beta ahora es Supabase.
-   *
-   * Esto permite:
-   *
    * ?fallback=beta
    *
-   * para saltarse PelixPlay y consultar solamente Supabase.
+   * Consulta solamente Supabase.
    */
 
   if (fallbackBeta) {
-
-    await sendSSE(
-      writer,
-      "connected",
-      {
-        success: true,
-        status: "connected",
-        mode: "beta_fallback",
-        source: "Supabase",
-        tmdb_id: tmdbId,
-        type,
-        season,
-        episode
-      }
-    );
-
-    await sendSSE(
-      writer,
-      "beta_search",
-      {
-        success: true,
-        status: "searching_beta",
-        source: "Supabase"
-      }
-    );
 
     const beta = await runBeta({
       env,
@@ -296,46 +260,45 @@ async function processContent({
       force
     });
 
-    await sendSSE(
-      writer,
-      "beta_found",
-      {
-        success: beta.links.length > 0,
-        status: beta.links.length > 0
-          ? "beta_found"
-          : "beta_unavailable",
-        source: "Supabase",
-        found: beta.links.length,
-        links: beta.links,
-        cache: beta.cache || "miss",
-        error: beta.error || null
-      }
+    const betaLinks = deduplicateLinks(
+      (beta.links || []).filter(isValidLink)
     );
 
-    await sendSSE(
-      writer,
-      "complete",
-      {
-        success: beta.links.length > 0,
-        status: beta.links.length > 0
-          ? "success"
-          : "source_unavailable",
-        event: "complete",
-        source: "Supabase",
-        tmdb_id: tmdbId,
-        type,
-        season,
-        episode,
-        alpha_found: 0,
-        beta_found: beta.links.length,
-        found: beta.links.length,
-        links: beta.links
-      }
-    );
+    return jsonResponse({
+      success: betaLinks.length > 0,
 
-    writer.close();
+      status: betaLinks.length > 0
+        ? "success"
+        : "source_unavailable",
 
-    return response;
+      event: "complete",
+
+      source: "Supabase",
+
+      tmdb_id: tmdbId,
+      type,
+      season,
+      episode,
+
+      alpha_source: "PelixPlay",
+      beta_source: "Supabase",
+
+      alpha_found: 0,
+      beta_found: betaLinks.length,
+
+      alpha_queried: false,
+      beta_queried: true,
+
+      found: betaLinks.length,
+
+      links: betaLinks,
+
+      cache: beta.cache || "miss",
+
+      error: beta.error || null,
+
+      nsr: false
+    });
   }
 
 
@@ -344,65 +307,15 @@ async function processContent({
    * FLUJO NORMAL
    * ==============================================================
    *
-   * PelixPlay + Supabase se ejecutan simultáneamente.
-   */
-
-  await sendSSE(
-    writer,
-    "connected",
-    {
-      success: true,
-      status: "connected",
-      mode: "parallel",
-      tmdb_id: tmdbId,
-      type,
-      season,
-      episode
-    }
-  );
-
-
-  /*
-   * Avisamos que las dos búsquedas comienzan.
-   */
-
-  await sendSSE(
-    writer,
-    "alpha_search",
-    {
-      success: true,
-      status: "searching_alpha",
-      source: "PelixPlay"
-    }
-  );
-
-  await sendSSE(
-    writer,
-    "beta_search",
-    {
-      success: true,
-      status: "searching_beta",
-      source: "Supabase"
-    }
-  );
-
-
-  /*
-   * ==============================================================
-   * EJECUCIÓN EN PARALELO
-   * ==============================================================
-   *
-   * IMPORTANTE:
-   *
-   * No esperamos primero a PelixPlay para luego llamar Supabase.
-   *
-   * Las dos funciones arrancan juntas.
+   * PelixPlay + Supabase
+   * simultáneamente.
    */
 
   const [
     alpha,
     beta
   ] = await Promise.all([
+
     runAlpha({
       env,
       ctx,
@@ -422,12 +335,13 @@ async function processContent({
       episode,
       force
     })
+
   ]);
 
 
   /*
    * ==============================================================
-   * RESULTADOS
+   * LIMPIAR RESULTADOS
    * ==============================================================
    */
 
@@ -436,6 +350,7 @@ async function processContent({
       .filter(isValidLink)
   );
 
+
   const betaLinks = deduplicateLinks(
     (beta.links || [])
       .filter(isValidLink)
@@ -443,78 +358,183 @@ async function processContent({
 
 
   /*
-   * SSE Alpha
+   * ==============================================================
+   * COMBINAR
+   * ==============================================================
+   *
+   * SUPABASE PRIMERO
+   *
+   * Después PelixPlay.
+   *
+   * Vimeus se prioriza dentro de PelixPlay.
    */
 
-  await sendSSE(
-    writer,
-    "alpha_found",
-    {
-      success: alphaLinks.length > 0,
-      status: alphaLinks.length > 0
-        ? "alpha_found"
-        : "alpha_unavailable",
-      source: "PelixPlay",
-      found: alphaLinks.length,
-      links: alphaLinks,
-      cache: alpha.cache || "miss",
-      http_code: alpha.http_code ?? null,
-      content_type: alpha.content_type ?? null,
-      elapsed_ms: alpha.elapsed_ms ?? null,
-      parser: alpha.parser ?? null,
-      raw_keys: alpha.raw_keys ?? [],
-      all_embeds_languages:
-        alpha.all_embeds_languages ?? [],
-      all_embeds_urls:
-        alpha.all_embeds_urls ?? 0,
-      all_embeds_valid:
-        alpha.all_embeds_valid ?? 0,
-      all_embeds_discarded:
-        alpha.all_embeds_discarded ?? 0,
-      embeds_urls:
-        alpha.embeds_urls ?? 0,
-      embeds_valid:
-        alpha.embeds_valid ?? 0,
-      embeds_discarded:
-        alpha.embeds_discarded ?? 0,
-      error: alpha.error ?? null
-    }
-  );
+  const combinedLinks = deduplicateLinks([
 
+    ...betaLinks,
 
-  /*
-   * SSE Beta
-   */
+    ...prioritizeVimeus(alphaLinks)
 
-  await sendSSE(
-    writer,
-    "beta_found",
-    {
-      success: betaLinks.length > 0,
-      status: betaLinks.length > 0
-        ? "beta_found"
-        : "beta_unavailable",
-      source: "Supabase",
-      found: betaLinks.length,
-      links: betaLinks,
-      cache: beta.cache || "miss",
-      http_code: beta.http_code ?? null,
-      content_type: beta.content_type ?? null,
-      elapsed_ms: beta.elapsed_ms ?? null,
-      parser: beta.parser ?? "supabase_rest",
-      rows_received:
-        beta.rows_received ?? 0,
-      rows_valid:
-        beta.rows_valid ?? 0,
-      rows_discarded:
-        beta.rows_discarded ?? 0,
-      error: beta.error ?? null
-    }
-  );
+  ]);
 
 
   /*
    * ==============================================================
+   * SOURCE
+   * ==============================================================
+   */
+
+  let source = "none";
+
+  if (
+    betaLinks.length > 0 &&
+    alphaLinks.length > 0
+  ) {
+
+    source = "Supabase+PelixPlay";
+
+  } else if (
+    betaLinks.length > 0
+  ) {
+
+    source = "Supabase";
+
+  } else if (
+    alphaLinks.length > 0
+  ) {
+
+    source = "PelixPlay";
+  }
+
+
+  /*
+   * ==============================================================
+   * RESPUESTA JSON
+   * ==============================================================
+   */
+
+  return jsonResponse({
+
+    success:
+      combinedLinks.length > 0,
+
+    status:
+      combinedLinks.length > 0
+        ? "success"
+        : "source_unavailable",
+
+    event:
+      "complete",
+
+    source,
+
+    tmdb_id:
+      tmdbId,
+
+    type,
+
+    season,
+
+    episode,
+
+    alpha_source:
+      "PelixPlay",
+
+    beta_source:
+      "Supabase",
+
+    alpha_found:
+      alphaLinks.length,
+
+    beta_found:
+      betaLinks.length,
+
+    alpha_queried:
+      true,
+
+    beta_queried:
+      true,
+
+    found:
+      combinedLinks.length,
+
+    links:
+      combinedLinks,
+
+    /*
+     * Diagnóstico Alpha
+     */
+
+    alpha: {
+
+      success:
+        alpha.success || false,
+
+      cache:
+        alpha.cache || "miss",
+
+      http_code:
+        alpha.http_code ?? null,
+
+      content_type:
+        alpha.content_type ?? null,
+
+      elapsed_ms:
+        alpha.elapsed_ms ?? null,
+
+      parser:
+        alpha.parser ?? null,
+
+      error:
+        alpha.error ?? null
+
+    },
+
+    /*
+     * Diagnóstico Beta
+     */
+
+    beta: {
+
+      success:
+        beta.success || false,
+
+      cache:
+        beta.cache || "miss",
+
+      http_code:
+        beta.http_code ?? null,
+
+      content_type:
+        beta.content_type ?? null,
+
+      elapsed_ms:
+        beta.elapsed_ms ?? null,
+
+      parser:
+        beta.parser ?? "supabase_rest",
+
+      rows_received:
+        beta.rows_received ?? 0,
+
+      rows_valid:
+        beta.rows_valid ?? 0,
+
+      rows_discarded:
+        beta.rows_discarded ?? 0,
+
+      error:
+        beta.error ?? null
+
+    },
+
+    nsr:
+      false
+
+  });
+}
+
+==============================================================
    * COMBINACIÓN
    * ==============================================================
    *
