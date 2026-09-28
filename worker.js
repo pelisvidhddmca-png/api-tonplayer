@@ -2478,939 +2478,981 @@ function jsonResponse(
       headers
     }
   );
-}
-  const retryServerBtn = document.getElementById('retryServerBtn');
-  const embedToast = document.getElementById('embedToast');
-  const embedToastClose = document.getElementById('embedToastClose');
-  const badgeQuality = document.getElementById('badgeQuality');
-  const topActions = document.getElementById('topActions');
-  const topLeftActions = document.getElementById('topLeftActions');
-  const nowWatching = document.getElementById('nowWatching');
-  const langBtn = document.getElementById('langBtn');
-  const langDropdown = document.getElementById('langDropdown');
-  const serversTopBtn = document.getElementById('serversTopBtn');
-  const serversDropdown = document.getElementById('serversDropdown');
-  const playGate = document.getElementById('playGate');
-  const playBtn = document.getElementById('playBtn');
-  const controlsBar = document.getElementById('controlsBar');
-  const centerControls = document.getElementById('centerControls');
-  const playPauseBtn = document.getElementById('playPauseBtn');
-  const backBtn = document.getElementById('backBtn');
-  const fwdBtn = document.getElementById('fwdBtn');
-  const muteBtn = document.getElementById('muteBtn');
-  const volumeSlider = document.getElementById('volumeSlider');
-  const pipBtn = document.getElementById('pipBtn');
-  const fullscreenBtn = document.getElementById('fullscreenBtn');
-  const settingsBtn = document.getElementById('settingsBtn');
-  const settingsDropdown = document.getElementById('settingsDropdown');
-  const speedOptions = document.getElementById('speedOptions');
-  const qualityMenuItem = document.getElementById('qualityMenuItem');
-  const qualityOptions = document.getElementById('qualityOptions');
-  const speedCurrentLabel = document.getElementById('speedCurrentLabel');
-  const qualityCurrentLabel = document.getElementById('qualityCurrentLabel');
-  const normalizeToggle = document.getElementById('normalizeToggle');
-  const normalizeToggleRow = document.getElementById('normalizeToggleRow');
-  const progressTrack = document.getElementById('progressTrack');
-  const progressFilled = document.getElementById('progressFilled');
-  const progressBuffered = document.getElementById('progressBuffered');
-  const progressThumb = document.getElementById('progressThumb');
-  const timeCurrent = document.getElementById('timeCurrent');
-  const timeDuration = document.getElementById('timeDuration');
-  const playerWrap = document.getElementById('playerWrap');
+}d var(--glass-border);box-shadow:var(--glass-highlight);
+    display:flex;align-items:center;justify-content:center;transition:transform .12s, background .12s;
+  }
+  .vp-cbtn:active{background:var(--glass-bg-hover);transform:scale(.93);}
+  .vp-cbtn.main{width:68px;height:68px;}
+  .vp-center.hidden .vp-cbtn{pointer-events:none;}
+  .vplayer.is-buffering .vp-cbtn.main{visibility:hidden;} /* en su lugar se ve el spinner */
+  .vp-buffering{
+    position:absolute;left:50%;top:50%;width:38px;height:38px;margin:-19px 0 0 -19px;z-index:6;
+    border-radius:50%;border:3px solid rgba(255,255,255,0.15);border-top-color:var(--accent);
+    animation:spin .8s linear infinite;display:none;pointer-events:none;
+  }
+  .vp-buffering.on{display:block;}
 
-  let hlsInstance = null;
-  let currentIndex = -1;
-  let started = false;
-  let selectedLang = null; // null = todos los idiomas
-  let fallbackAttempted = false; // evita loops: solo un intento de fallback a iframe por carga de servidor
+  .vp-controls{
+    position:absolute;left:0;right:0;bottom:0;z-index:7;
+    padding:28px 12px calc(env(safe-area-inset-bottom,0px) + 10px);
+    background:linear-gradient(to top, rgba(0,0,0,0.88), rgba(0,0,0,0));
+    display:flex;flex-direction:column;gap:4px;transition:opacity .25s;
+  }
+  .vp-controls.hidden{opacity:0;pointer-events:none;}
 
-  function escapeHtml(str) {
-    return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  /* Zona táctil de 28 px (la línea visible es más fina) para acertar con el dedo. */
+  .vp-progress{position:relative;height:28px;display:flex;align-items:center;cursor:pointer;touch-action:none;}
+  .vp-track{position:relative;width:100%;height:4px;border-radius:2px;background:rgba(255,255,255,0.22);transition:height .12s;}
+  .vp-progress:hover .vp-track,.vp-progress.scrubbing .vp-track{height:6px;}
+  .vp-buffered{position:absolute;left:0;top:0;height:100%;width:0;border-radius:2px;background:rgba(255,255,255,0.38);}
+  .vp-played{position:absolute;left:0;top:0;height:100%;width:0;border-radius:2px;background:var(--accent);}
+  .vp-thumb{
+    position:absolute;top:50%;left:0;width:12px;height:12px;border-radius:50%;
+    background:var(--accent);transform:translate(-50%,-50%);box-shadow:0 0 0 3px rgba(229,9,20,0.28);
+    transition:transform .12s, box-shadow .12s;
+  }
+  /* Al arrastrar, el punto crece y su halo rojo se agranda. */
+  .vp-progress.scrubbing .vp-thumb{transform:translate(-50%,-50%) scale(1.35);box-shadow:0 0 0 6px rgba(229,9,20,0.30);}
+
+  .vp-row{display:flex;align-items:center;gap:6px;}
+  .vp-row .spacer{flex:1;}
+  .vp-btn{
+    background:none;border:none;color:#fff;cursor:pointer;padding:6px;border-radius:8px;flex:none;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .vp-btn:active{background:rgba(255,255,255,0.14);}
+  .vp-time{color:#eee;font-size:12px;font-variant-numeric:tabular-nums;flex:none;padding:0 4px;}
+
+  .vp-volume{display:flex;align-items:center;}
+  .vp-vol-track{position:relative;width:64px;height:16px;display:flex;align-items:center;cursor:pointer;touch-action:none;}
+  .vp-vol-bg{position:relative;width:100%;height:4px;border-radius:2px;background:rgba(255,255,255,0.22);}
+  .vp-vol-fill{position:absolute;left:0;top:0;height:100%;width:100%;border-radius:2px;background:#fff;}
+  @media (max-width: 520px){ .vp-vol-track{display:none;} }
+
+  /* Menú de ajustes (velocidad / calidad / audio) */
+  .vp-settings{
+    position:absolute;z-index:8;right:12px;
+    bottom:calc(env(safe-area-inset-bottom,0px) + 62px);
+    width:min(260px, calc(100% - 24px));max-height:calc(100% - 84px);overflow-y:auto;
+    background:var(--glass-panel);
+    -webkit-backdrop-filter:var(--glass-blur);backdrop-filter:var(--glass-blur);
+    border:1px solid var(--glass-border);border-radius:12px;
+    padding:5px;display:none;flex-direction:column;gap:1px;
+    box-shadow:var(--glass-highlight), 0 12px 32px rgba(0,0,0,0.6);
+  }
+  .vp-settings.open{display:flex;}
+  .vp-mi{
+    display:flex;align-items:center;gap:10px;width:100%;text-align:left;cursor:pointer;
+    background:transparent;border:none;color:var(--text);font-family:inherit;font-size:13px;
+    padding:9px 10px;border-radius:8px;line-height:1.2;
+  }
+  .vp-mi:hover,.vp-mi:active{background:var(--glass-hover-item);}
+  .vp-mi-l{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .vp-mi-v{color:var(--text-dim);font-size:12px;flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .vp-mi-head{font-weight:600;border-bottom:1px solid var(--border);border-radius:8px 8px 0 0;margin-bottom:3px;}
+  .vp-mi.active{color:#ff8a8a;}
+  .vp-mi .vp-check{width:18px;height:18px;flex:none;display:flex;align-items:center;justify-content:center;color:var(--accent);}
+
+  .empty{
+    position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    color:var(--text-dim);font-size:14px;text-align:center;padding:24px;
   }
 
-  function getLanguages() {
-    const set = [];
-    SERVERS.forEach(s => { if (set.indexOf(s.idioma) === -1) set.push(s.idioma); });
-    return set;
+  /* Pantalla de poster / play inicial */
+  .poster{
+    position:absolute;inset:0;z-index:15;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;
+    background:#000;
   }
+  .poster-backdrop{
+    position:absolute;inset:0;background-size:cover;background-position:center;opacity:0;transition:opacity .4s ease;
+  }
+  .poster-backdrop.visible{opacity:1;}
+  .poster-backdrop::after{
+    content:"";position:absolute;inset:0;
+    background:linear-gradient(to bottom, rgba(0,0,0,0.35), rgba(0,0,0,0.55) 55%, #000);
+  }
+  .poster-logo{position:absolute;top:calc(env(safe-area-inset-top,0px) + 18px);left:20px;z-index:2;height:26px;}
+  .poster-logo img{height:100%;display:block;}
+  /* Título/año en la pantalla de poster: compacto, sin el rótulo "Estás
+     viendo" (ese aparece luego, sobre el reproductor). */
+  .poster-heading{
+    position:absolute;top:calc(env(safe-area-inset-top,0px) + 18px);left:0;right:0;z-index:2;
+    display:flex;justify-content:center;padding:0 64px;text-align:center;
+  }
+  .poster-heading-title{font-size:12px;font-weight:600;color:var(--text-dim);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;}
 
-  function renderLangDropdown() {
-    const langs = getLanguages();
-    langDropdown.innerHTML = '';
-    const allItem = document.createElement('div');
-    allItem.className = 'dropdown-item' + (selectedLang === null ? ' active' : '');
-    allItem.innerHTML = '<div class="name">Todos</div>';
-    allItem.addEventListener('click', () => { selectedLang = null; closeDropdowns(); onLangChange(); });
-    langDropdown.appendChild(allItem);
-    langs.forEach(lang => {
-      const item = document.createElement('div');
-      item.className = 'dropdown-item' + (selectedLang === lang ? ' active' : '');
-      item.innerHTML = '<div class="name">' + escapeHtml(lang) + '</div>';
-      item.addEventListener('click', () => { selectedLang = lang; closeDropdowns(); onLangChange(); });
-      langDropdown.appendChild(item);
+  /* Rótulo "Estás viendo" sobre el reproductor, centrado en la barra superior
+     entre los botones de idioma y servidor. */
+  .watching{
+    display:none;flex:1;min-width:0;flex-direction:column;align-items:center;gap:1px;
+    pointer-events:none;
+  }
+  .watching.visible{display:flex;}
+  .watching-kicker{font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--text-dim);font-weight:600;}
+  .watching-title{font-size:12px;font-weight:600;color:var(--text);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;}
+  .poster-content{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:16px;}
+  .play-btn{
+    width:74px;height:74px;border-radius:50%;background:var(--accent);border:none;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;box-shadow:0 8px 28px rgba(229,9,20,0.45);
+    transition:transform .15s;
+  }
+  .play-btn:active{transform:scale(.94);}
+  .play-btn iconify-icon{color:#fff;margin-left:3px;}
+  .poster-title{font-size:19px;font-weight:700;color:var(--text);text-align:center;padding:0 24px;}
+  .poster-year{font-size:14px;color:var(--text-dim);}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="poster" id="poster">
+    <div class="poster-backdrop" id="posterBackdrop"></div>
+    <div class="poster-logo"><img src="${LOGO_DATA_URI}" alt="" /></div>
+    <div class="poster-heading" id="posterHeading" style="display:none;">
+      <span class="poster-heading-title" id="posterHeadingTitle"></span>
+    </div>
+    <div class="poster-content">
+      <button class="play-btn" id="playBtn" type="button" aria-label="Reproducir">
+        <iconify-icon icon="uil:play" width="30" height="30"></iconify-icon>
+      </button>
+    </div>
+  </div>
+
+  <div class="player-wrap" id="playerWrap">
+    <div class="backdrop" id="backdrop"></div>
+    <div class="state" id="playerState">
+      <div class="spinner"></div>
+      <div>Buscando servidores...</div>
+    </div>
+  </div>
+
+  <div class="top-bar" id="topBar" style="display:none;">
+    <div class="menu left" id="langMenu">
+      <button class="menu-btn" id="langBtn" type="button" aria-label="Idioma">
+        <iconify-icon id="langFlag" icon="circle-flags:xx" width="18" height="18" style="display:none;"></iconify-icon>
+        <iconify-icon icon="uil:globe" width="17" height="17" id="langIcon"></iconify-icon>
+        <iconify-icon icon="uil:angle-down" width="13" height="13" class="chev"></iconify-icon>
+      </button>
+      <div class="menu-panel" id="langPanel"></div>
+    </div>
+
+    <div class="watching" id="watching">
+      <span class="watching-kicker">Estás viendo</span>
+      <span class="watching-title" id="watchingTitle"></span>
+    </div>
+
+    <div class="menu right" id="serverMenu">
+      <button class="menu-btn" id="serverBtn" type="button" aria-label="Servidor">
+        <iconify-icon icon="uil:cloud" width="17" height="17"></iconify-icon>
+        <iconify-icon icon="uil:angle-down" width="13" height="13" class="chev"></iconify-icon>
+      </button>
+      <div class="menu-panel" id="serverPanel"></div>
+    </div>
+  </div>
+
+  <div class="empty" id="emptyState" style="display:none;">No hay servidores disponibles para este contenido.</div>
+</div>
+
+<script>
+(function(){
+  var API_PATH = ${JSON.stringify(apiPath)};
+  var BACKDROP_PATH = ${JSON.stringify(backdropApiPath)};
+  var CONTENT_KIND = ${JSON.stringify(params.kind)};
+  var CONTENT_SEASON = ${JSON.stringify(params.season || null)};
+  var CONTENT_EPISODE = ${JSON.stringify(params.episode || null)};
+
+  var playerWrap = document.getElementById('playerWrap');
+  var backdropEl = document.getElementById('backdrop');
+  var topBar = document.getElementById('topBar');
+  var emptyState = document.getElementById('emptyState');
+
+  var poster = document.getElementById('poster');
+  var posterBackdrop = document.getElementById('posterBackdrop');
+  var posterHeading = document.getElementById('posterHeading');
+  var posterHeadingTitle = document.getElementById('posterHeadingTitle');
+  var playBtn = document.getElementById('playBtn');
+  var watching = document.getElementById('watching');
+  var watchingTitle = document.getElementById('watchingTitle');
+
+  var langMenu = document.getElementById('langMenu');
+  var langBtn = document.getElementById('langBtn');
+  var langPanel = document.getElementById('langPanel');
+  var langFlag = document.getElementById('langFlag');
+  var langIcon = document.getElementById('langIcon');
+
+  var serverMenu = document.getElementById('serverMenu');
+  var serverBtn = document.getElementById('serverBtn');
+  var serverPanel = document.getElementById('serverPanel');
+
+  var allServers = [];
+  var currentLang = null;
+  var currentServer = null;
+
+  function escapeHtml(str){
+    return String(str).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
     });
   }
 
-  function renderServersDropdown() {
-    serversDropdown.innerHTML = '';
-    const filtered = selectedLang ? SERVERS.filter(s => s.idioma === selectedLang) : SERVERS;
-    filtered.forEach(s => {
-      const realIndex = SERVERS.indexOf(s);
-      const item = document.createElement('div');
-      item.className = 'dropdown-item' + (realIndex === currentIndex ? ' active' : '');
-      const metaText = s.calidad && s.calidad !== 'Desconocida'
-        ? escapeHtml(s.idioma) + ' · ' + escapeHtml(s.calidad)
-        : escapeHtml(s.idioma);
-      const faviconUrl = s.domain
-        ? 'https://www.google.com/s2/favicons?sz=64&domain=' + encodeURIComponent(s.domain)
-        : null;
-      const iconHtml = faviconUrl
-        ? '<img class="server-favicon" src="' + faviconUrl + '" alt="" onerror="this.style.visibility=\'hidden\'" />'
-        : '<div class="server-favicon server-favicon-placeholder"></div>';
-      item.innerHTML = '<div class="dropdown-item-row">' + iconHtml +
-        '<div class="dropdown-item-text"><div class="name">' + escapeHtml(s.servidor) + '</div>' +
-        '<div class="meta">' + metaText + '</div></div></div>';
-      item.addEventListener('click', () => { closeDropdowns(); loadServer(realIndex); });
-      serversDropdown.appendChild(item);
-    });
+  function setPlayerState(html){
+    destroyPlayer();
+    playerWrap.innerHTML = '';
+    playerWrap.appendChild(backdropEl);
+    var div = document.createElement('div');
+    div.className = 'state';
+    div.innerHTML = html;
+    playerWrap.appendChild(div);
   }
 
-  function onLangChange() {
-    renderLangDropdown();
-    renderServersDropdown();
-    const filtered = selectedLang ? SERVERS.filter(s => s.idioma === selectedLang) : SERVERS;
-    if (filtered.length && filtered.indexOf(SERVERS[currentIndex]) === -1) {
-      loadServer(SERVERS.indexOf(filtered[0]));
-    }
-  }
+  var tmdbInfo = null; // { url, title, year } — cache local en memoria, sin KV.
+  var contentLine = null; // "Título (Año)" o "Título (Año) T1E1", para el rótulo sobre el player.
+  var playbackStarted = false; // true tras pulsar play; si TMDB responde después, igual se muestra.
 
-  const dropdownCloseTimers = new WeakMap();
+  function loadInfo(){
+    fetch(BACKDROP_PATH)
+      .then(function(res){ return res.json(); })
+      .then(function(data){
+        if(!data || !data.success) return;
+        tmdbInfo = data;
 
-  function closeDropdowns() {
-    [langDropdown, serversDropdown, settingsDropdown].forEach(d => {
-      const pending = dropdownCloseTimers.get(d);
-      if (pending) clearTimeout(pending);
-      if (!d.classList.contains('open')) return;
-      d.classList.remove('show');
-      const timer = setTimeout(() => d.classList.remove('open'), 180);
-      dropdownCloseTimers.set(d, timer);
-    });
-    langBtn.classList.remove('open');
-    serversTopBtn.classList.remove('open');
-    settingsBtn.classList.remove('open');
-  }
-
-  function openDropdown(dropdown, btn) {
-    const pending = dropdownCloseTimers.get(dropdown);
-    if (pending) { clearTimeout(pending); dropdownCloseTimers.delete(dropdown); }
-    dropdown.classList.add('open');
-    btn.classList.add('open');
-    requestAnimationFrame(() => requestAnimationFrame(() => dropdown.classList.add('show')));
-  }
-
-  function toggleDropdown(dropdown, btn) {
-    const willOpen = !dropdown.classList.contains('show');
-    closeDropdowns();
-    if (willOpen) openDropdown(dropdown, btn);
-  }
-
-  langBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleDropdown(langDropdown, langBtn); });
-  serversTopBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleDropdown(serversDropdown, serversTopBtn); });
-  settingsBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    showSettingsPage('pageRoot');
-    toggleDropdown(settingsDropdown, settingsBtn);
-  });
-  settingsDropdown.addEventListener('click', (e) => e.stopPropagation());
-  langDropdown.addEventListener('click', (e) => e.stopPropagation());
-  serversDropdown.addEventListener('click', (e) => e.stopPropagation());
-  document.addEventListener('click', closeDropdowns);
-
-  // ---------- Navegación por submenús del panel de configuración (estilo JWPlayer) ----------
-
-  function showSettingsPage(pageId) {
-    settingsDropdown.querySelectorAll('.settings-page').forEach(p => {
-      p.classList.toggle('active', p.id === pageId);
-    });
-  }
-
-  settingsDropdown.querySelectorAll('.settings-menu-item[data-target]').forEach(item => {
-    item.addEventListener('click', () => showSettingsPage(item.dataset.target));
-  });
-  settingsDropdown.querySelectorAll('.settings-page-header[data-back]').forEach(header => {
-    header.addEventListener('click', () => showSettingsPage(header.dataset.back));
-  });
-
-  function resetPlayerUI() {
-    if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
-    if (loadTimeoutTimer) { clearTimeout(loadTimeoutTimer); loadTimeoutTimer = null; }
-    clearEmbedWatchdog();
-    isActuallyPlaying = false;
-    playGate.classList.remove('gate-ready');
-    videoEl.pause();
-    videoEl.removeAttribute('src');
-    videoEl.style.display = 'none';
-    iframeEl.src = '';
-    iframeEl.style.display = 'none';
-    errorEl.style.display = 'none';
-    playBtn.style.display = 'none';
-    controlsBar.style.display = 'none';
-    centerControls.style.display = 'none';
-    hideBufferSpinner();
-    qualityMenuItem.style.display = 'none';
-    embedToast.style.display = 'none';
-    if (embedToastTimer) clearTimeout(embedToastTimer);
-    nowWatching.style.display = 'none';
-    loadingEl.style.display = 'flex';
-
-    // Reinicia el contador/barra de progreso: sin esto quedan mostrando
-    // el tiempo/duración del servidor anterior hasta que llega el primer evento.
-    timeCurrent.textContent = '0:00';
-    timeDuration.textContent = '0:00';
-    progressFilled.style.width = '0%';
-    progressBuffered.style.width = '0%';
-    progressThumb.style.left = '0%';
-    releaseWakeLock();
-  }
-
-  let loadTimeoutTimer = null;
-
-  playBtn.addEventListener('click', () => {
-    if (started) return;
-    started = true;
-    playGate.style.display = 'none';
-    centerControls.style.display = 'flex';
-    videoEl.play().catch(() => {});
-    updateNowWatchingVisibility();
-
-    // Máximo 15s desde que se pide reproducir hasta que el video realmente
-    // empieza (evento 'playing'). Si no llega a tiempo, se asume que MediaFlow/
-    // el HLS está trabado y se cae directo al embed original.
-    if (loadTimeoutTimer) clearTimeout(loadTimeoutTimer);
-    loadTimeoutTimer = setTimeout(() => {
-      if (!isActuallyPlaying) {
-        tryFallbackToEmbed();
-      }
-    }, 15000);
-  });
-
-  async function fetchServers() {
-    const params = new URLSearchParams({
-      kind: MEDIA.kind, tmdb_id: MEDIA.tmdbId, season: MEDIA.season, episode: MEDIA.episode
-    });
-    try {
-      const res = await fetch('/api/servers?' + params.toString());
-      const data = await res.json();
-      if (!data.success || !data.servers || !data.servers.length) {
-        loadingEl.style.display = 'none';
-        errorText.textContent = data.error || 'Sin servidores disponibles';
-        errorEl.style.display = 'flex';
-        return;
-      }
-      SERVERS = data.servers;
-      topActions.style.display = 'flex';
-      topLeftActions.style.display = 'flex';
-      renderLangDropdown();
-      renderServersDropdown();
-      loadServer(0);
-    } catch (err) {
-      loadingEl.style.display = 'none';
-      errorText.textContent = 'No se pudo consultar el buscador de servidores';
-      errorEl.style.display = 'flex';
-    }
-  }
-
-  async function loadServer(index) {
-    const server = SERVERS[index];
-    if (!server) return;
-    currentIndex = index;
-    renderLangDropdown();
-    renderServersDropdown();
-    resetPlayerUI();
-    loadingEl.querySelector('span').textContent = 'Buscando reproducción...';
-    badgeQuality.textContent = (server.calidad && server.calidad !== 'Desconocida') ? server.calidad : '';
-    fallbackAttempted = false;
-
-    const params = new URLSearchParams({
-      kind: MEDIA.kind, tmdb_id: MEDIA.tmdbId, season: MEDIA.season, episode: MEDIA.episode, index: String(index)
-    });
-
-    try {
-      const res = await fetch('/api/resolve?' + params.toString());
-      const data = await res.json();
-      loadingEl.style.display = 'none';
-
-      if (!data.success) {
-        showFatalError();
-        return;
-      }
-      prepareStream(data);
-    } catch (err) {
-      loadingEl.style.display = 'none';
-      showFatalError();
-    }
-  }
-
-  // Prepara el stream (carga la fuente) sin reproducir todavía.
-  // El botón play queda visible sobre el backdrop hasta que el usuario lo pulse.
-  function prepareStream(data) {
-    if (data.mode === 'direct' && data.is_hls) {
-      videoEl.style.display = 'block';
-      if (window.Hls && Hls.isSupported()) {
-        hlsInstance = new Hls();
-        hlsInstance.loadSource(data.playable_url);
-        hlsInstance.attachMedia(videoEl);
-        hlsInstance.on(Hls.Events.ERROR, (event, errData) => {
-          if (errData.fatal) {
-            tryFallbackToEmbed();
+        if(data.url){
+          posterBackdrop.style.backgroundImage = 'url(' + data.url + ')';
+          posterBackdrop.classList.add('visible');
+          backdropEl.style.backgroundImage = 'url(' + data.url + ')';
+          backdropEl.classList.add('visible');
+        }
+        if(data.title){
+          var line = data.title;
+          if(data.year) line += ' (' + data.year + ')';
+          if(CONTENT_KIND === 'tv' && CONTENT_SEASON && CONTENT_EPISODE){
+            line += ' T' + CONTENT_SEASON + 'E' + CONTENT_EPISODE;
           }
-        });
-        hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
-          renderQualityOptions();
-          // Si el HLS expone múltiples calidades, se extiende el margen de
-          // carga de 15s a 30s (streams con varios niveles suelen tardar más
-          // en negociar la conexión inicial).
-          if (hlsInstance.levels && hlsInstance.levels.length > 1 && loadTimeoutTimer) {
-            clearTimeout(loadTimeoutTimer);
-            loadTimeoutTimer = setTimeout(() => {
-              if (!isActuallyPlaying) tryFallbackToEmbed();
-            }, 30000);
-          }
-        });
-      } else {
-        videoEl.src = data.playable_url;
-      }
-      controlsBar.style.display = 'flex';
-      showPlayGateOrAutoplay();
-    } else if (data.mode === 'direct') {
-      videoEl.style.display = 'block';
-      videoEl.src = data.playable_url;
-      videoEl.addEventListener('error', () => tryFallbackToEmbed(), { once: true });
-      controlsBar.style.display = 'flex';
-      showPlayGateOrAutoplay();
-    } else {
-      // Fallback directo (ya venía marcado como iframe desde el backend).
-      iframeEl.style.display = 'block';
-      iframeEl.src = data.playable_url;
-      playGate.style.display = 'none';
-      started = true;
-      updateNowWatchingVisibility();
-      showEmbedToast();
-      startEmbedWatchdog();
-    }
+          contentLine = line;
+          posterHeadingTitle.textContent = line;
+          posterHeading.style.display = 'flex';
+          watchingTitle.textContent = line;
+          if(playbackStarted) watching.classList.add('visible');
+        }
+      })
+      .catch(function(){ /* decorativo: silenciosamente ignorado */ });
   }
 
-  // Cuando el HLS falla de forma fatal, intenta reproducir el embed original
-  // (url_embed) dentro de un iframe, en vez de dejar al usuario sin salida.
-  async function tryFallbackToEmbed() {
-    if (fallbackAttempted) {
-      showFatalError();
-      return;
+  function closeMenus(except){
+    if(except !== langMenu) langMenu.classList.remove('open');
+    if(except !== serverMenu) serverMenu.classList.remove('open');
+  }
+
+  function toggleMenu(menu){
+    var willOpen = !menu.classList.contains('open');
+    closeMenus(null);
+    if(willOpen) menu.classList.add('open');
+  }
+
+  langBtn.addEventListener('click', function(e){ e.stopPropagation(); toggleMenu(langMenu); });
+  serverBtn.addEventListener('click', function(e){ e.stopPropagation(); toggleMenu(serverMenu); });
+  document.addEventListener('click', function(){ closeMenus(null); });
+
+  function init(){
+    loadInfo();
+  }
+
+  playBtn.addEventListener('click', function(){
+    poster.style.display = 'none';
+    playbackStarted = true;
+    if(contentLine){
+      watchingTitle.textContent = contentLine;
+      watching.classList.add('visible');
     }
-    fallbackAttempted = true;
+    startPlayback();
+  });
 
-    if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
-    isActuallyPlaying = false;
-    videoEl.style.display = 'none';
-    videoEl.removeAttribute('src');
-    controlsBar.style.display = 'none';
-    centerControls.style.display = 'none';
-    errorEl.style.display = 'none';
-    hideBufferSpinner();
-    nowWatching.style.display = 'none';
-    playGate.style.display = 'flex';
-    playBtn.style.display = 'none';
-    loadingEl.style.display = 'flex';
-    loadingEl.querySelector('span').textContent = 'Redirigiendo a embed original...';
+  async function startPlayback(){
+    try{
+      var res = await fetch(API_PATH);
+      var data = await res.json();
 
-    const params = new URLSearchParams({
-      kind: MEDIA.kind, tmdb_id: MEDIA.tmdbId, season: MEDIA.season, episode: MEDIA.episode, index: String(currentIndex)
-    });
-
-    try {
-      const res = await fetch('/api/embed?' + params.toString());
-      const data = await res.json();
-      loadingEl.style.display = 'none';
-
-      if (!data.success || !data.embed_url) {
-        showFatalError();
+      if(!data.success || !Array.isArray(data.servers) || data.servers.length === 0){
+        setPlayerState('<div>Contenido no disponible por el momento</div>');
+        emptyState.style.display = 'flex';
         return;
       }
 
-      // Fallback silencioso: solo queda el spinner ya oculto y el iframe.
-      errorEl.style.display = 'none';
-      hideBufferSpinner();
-      iframeEl.style.display = 'block';
-      iframeEl.src = data.embed_url;
-      playGate.style.display = 'none';
-      started = true;
-      updateNowWatchingVisibility();
-      showEmbedToast();
-      startEmbedWatchdog();
-    } catch (err) {
-      loadingEl.style.display = 'none';
-      showFatalError();
+      allServers = data.servers;
+      topBar.style.display = 'flex';
+
+      buildLangPanel();
+      selectLanguage(allServers[0].idioma);
+    }catch(err){
+      setPlayerState('<div>No se pudo cargar el contenido</div>');
     }
   }
 
-  // Muestra el overlay de error con opción de reintentar o cambiar de servidor,
-  // en vez de dejar al usuario sin ninguna salida.
-  function showFatalError() {
-    loadingEl.style.display = 'none';
-    isActuallyPlaying = false;
-    hideBufferSpinner();
-    nowWatching.style.display = 'none';
-    playGate.style.display = 'flex';
-    playBtn.style.display = 'none';
-    const hasMore = SERVERS.length > 1;
-    errorText.textContent = 'No se pudo procesar este servidor.';
-    retryServerBtn.style.display = hasMore ? 'inline-block' : 'none';
-    errorEl.style.display = 'flex';
+  function uniqueLanguages(){
+    var seen = {};
+    var list = [];
+    allServers.forEach(function(s){
+      if(!seen[s.idioma]){ seen[s.idioma] = true; list.push(s.idioma); }
+    });
+    return list;
   }
 
-  let embedToastTimer = null;
-  function showEmbedToast() {
-    embedToast.style.display = 'flex';
-    if (embedToastTimer) clearTimeout(embedToastTimer);
-    embedToastTimer = setTimeout(() => { embedToast.style.display = 'none'; }, 8000);
-  }
-  embedToastClose.addEventListener('click', () => {
-    embedToast.style.display = 'none';
-    if (embedToastTimer) clearTimeout(embedToastTimer);
-  });
+  // Mapeo de nombres de idioma (tal como los entrega el Finder) a un código
+  // de país para Circle Flags. Es heurístico: cubre los casos más comunes en
+  // plataformas de streaming en español; si no hay match, no se muestra bandera.
+  var LANG_FLAG_MAP = {
+    'latino': 'mx',
+    'español latino': 'mx',
+    'espanol latino': 'mx',
+    'castellano': 'es',
+    'español': 'es',
+    'espanol': 'es',
+    'español (españa)': 'es',
+    'ingles': 'us',
+    'inglés': 'us',
+    'english': 'us',
+    'subtitulado': 'us',
+    'subtitulado español': 'us',
+    'vose': 'us',
+    'vos': 'us',
+    'portugues': 'pt',
+    'portugués': 'pt',
+    'brasileño': 'br',
+    'brasil': 'br',
+    'frances': 'fr',
+    'francés': 'fr',
+    'aleman': 'de',
+    'alemán': 'de',
+    'italiano': 'it',
+    'japones': 'jp',
+    'japonés': 'jp',
+    'coreano': 'kr'
+  };
 
-  let embedWatchdogTimer = null;
-
-  // Un iframe cross-origin no avisa si el contenido embebido falló realmente
-  // (solo si el propio iframe no llegó a cargar), así que el único fallback
-  // automático posible es por tiempo: si no dispara 'load' en 10s, se asume
-  // que el embed no respondió y se avanza al siguiente servidor.
-  function startEmbedWatchdog() {
-    clearEmbedWatchdog();
-    embedWatchdogTimer = setTimeout(() => {
-      advanceToNextServer();
-    }, 10000);
-    iframeEl.addEventListener('load', clearEmbedWatchdog, { once: true });
-  }
-
-  function clearEmbedWatchdog() {
-    if (embedWatchdogTimer) { clearTimeout(embedWatchdogTimer); embedWatchdogTimer = null; }
-  }
-
-  function advanceToNextServer() {
-    if (SERVERS.length <= 1) {
-      showFatalError();
-      return;
-    }
-    const nextIndex = (currentIndex + 1) % SERVERS.length;
-    loadServer(nextIndex);
-  }
-
-  retryServerBtn.addEventListener('click', () => {
-    advanceToNextServer();
-  });
-
-  // Solo en la primera carga se muestra el gate con botón play. En cambios de
-  // servidor posteriores (started=true) se reproduce directo, sin gate.
-  function updateNowWatchingVisibility() {
-    const hasTitle = !!nowWatching.querySelector('.now-watching-title').textContent.trim();
-    nowWatching.style.display = hasTitle ? 'block' : 'none';
+  function flagCodeForLanguage(lang){
+    if(!lang) return null;
+    var key = String(lang).trim().toLowerCase();
+    return LANG_FLAG_MAP[key] || null;
   }
 
-  function showPlayGateOrAutoplay() {
-    if (started) {
-      // Cambios de servidor posteriores al primero: sin gate, reproduce directo
-      // y los controles centrales (play/pause, ±10s) quedan visibles de una.
-      playGate.style.display = 'none';
-      centerControls.style.display = 'flex';
-      videoEl.play().catch(() => {});
-      updateNowWatchingVisibility();
-      if (loadTimeoutTimer) clearTimeout(loadTimeoutTimer);
-      loadTimeoutTimer = setTimeout(() => {
-        if (!isActuallyPlaying) tryFallbackToEmbed();
-      }, 15000);
+  function flagIconHtml(lang){
+    var code = flagCodeForLanguage(lang);
+    if(!code) return '<span class="favicon"></span>';
+    return '<iconify-icon class="favicon" icon="circle-flags:' + code + '" width="16" height="16"></iconify-icon>';
+  }
+
+  function buildLangPanel(){
+    var langs = uniqueLanguages();
+    langPanel.innerHTML = '';
+    langs.forEach(function(lang){
+      var item = document.createElement('button');
+      item.className = 'menu-item';
+      item.type = 'button';
+      item.innerHTML = flagIconHtml(lang) +
+        '<span class="label-group"><span class="name">' + escapeHtml(lang) + '</span></span>';
+      item.addEventListener('click', function(e){
+        e.stopPropagation();
+        selectLanguage(lang);
+        closeMenus(null);
+      });
+      langPanel.appendChild(item);
+    });
+  }
+
+  function selectLanguage(lang){
+    currentLang = lang;
+
+    var code = flagCodeForLanguage(lang);
+    if(code){
+      langFlag.setAttribute('icon', 'circle-flags:' + code);
+      langFlag.style.display = 'inline-block';
+      langIcon.style.display = 'none';
     } else {
-      // Primera carga: solo el botón play del gate es interactivo. Los
-      // controles centrales permanecen ocultos para que no se superpongan
-      // y capturen el click antes de que el usuario inicie la reproducción.
-      // "Estás viendo" tampoco se muestra aún: recién aparece cuando hay
-      // player o embed realmente activo.
-      centerControls.style.display = 'none';
-      nowWatching.style.display = 'none';
-      playGate.style.display = 'flex';
-      playBtn.style.display = 'flex';
-      // El backdrop pasa de escala de grises a color una vez que ya se
-      // encontraron servidores y el player está listo para reproducir.
-      playGate.classList.add('gate-ready');
-    }
-  }
-
-  // ---------- Player custom (controles propios sobre <video>) ----------
-
-  function formatTime(sec) {
-    if (!isFinite(sec) || sec < 0) sec = 0;
-    const m = Math.floor(sec / 60);
-    const s = Math.floor(sec % 60);
-    return m + ':' + String(s).padStart(2, '0');
-  }
-
-  function updatePlayIcon() {
-    const icon = videoEl.paused ? 'solar:play-bold' : 'solar:pause-bold';
-    playPauseBtn.innerHTML = '<iconify-icon icon="' + icon + '"></iconify-icon>';
-  }
-
-  playPauseBtn.addEventListener('click', () => {
-    if (videoEl.paused) videoEl.play().catch(() => {});
-    else videoEl.pause();
-  });
-  videoEl.addEventListener('play', updatePlayIcon);
-  videoEl.addEventListener('pause', updatePlayIcon);
-
-  // Spinner de buffering: aparece mientras el video está cargando/rebuffering.
-  // Mientras se muestra, los controles centrales (play/pause, ±10s) se ocultan
-  // para no interferir visualmente con la carga.
-  let bufferStatusInterval = null;
-
-  function formatBytes(bytes) {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-  }
-
-  function updateBufferStatus() {
-    if (!videoEl.buffered || videoEl.buffered.length === 0) {
-      bufferStatus.textContent = 'Almacenando en búfer...';
-      return;
-    }
-    const bufferedEnd = videoEl.buffered.end(videoEl.buffered.length - 1);
-    const bufferedSeconds = Math.max(0, bufferedEnd - videoEl.currentTime);
-
-    // Estimación de KB en búfer a partir del bitrate del nivel HLS actual
-    // (no hay una API que exponga bytes reales descargados en <video>).
-    let bitrateBps = null;
-    if (hlsInstance && hlsInstance.levels && hlsInstance.levels[hlsInstance.currentLevel >= 0 ? hlsInstance.currentLevel : 0]) {
-      const level = hlsInstance.levels[hlsInstance.currentLevel >= 0 ? hlsInstance.currentLevel : 0];
-      bitrateBps = level.bitrate;
+      langFlag.style.display = 'none';
+      langIcon.style.display = 'inline-block';
     }
 
-    if (bitrateBps) {
-      const bytes = (bitrateBps / 8) * bufferedSeconds;
-      bufferStatus.textContent = 'Almacenando en búfer, ' + formatBytes(bytes);
+    Array.prototype.forEach.call(langPanel.children, function(el, i){
+      el.classList.toggle('active', uniqueLanguages()[i] === lang);
+    });
+
+    var filtered = allServers.filter(function(s){ return s.idioma === lang; });
+    buildServerPanel(filtered);
+
+    if(filtered.length > 0){
+      selectServer(filtered[0]);
     } else {
-      bufferStatus.textContent = 'Almacenando en búfer, ' + bufferedSeconds.toFixed(1) + 's';
+      setPlayerState('<div>No hay servidores para este idioma</div>');
     }
   }
 
-  function showBufferSpinner() {
-    bufferSpinner.style.display = 'flex';
-    centerControls.style.display = 'none';
-    updateBufferStatus();
-    if (bufferStatusInterval) clearInterval(bufferStatusInterval);
-    bufferStatusInterval = setInterval(updateBufferStatus, 500);
+  function faviconUrl(domain){
+    if(!domain) return null;
+    return 'https://www.google.com/s2/favicons?sz=64&domain=' + encodeURIComponent(domain);
   }
 
-  function hideBufferSpinner() {
-    bufferSpinner.style.display = 'none';
-    if (bufferStatusInterval) { clearInterval(bufferStatusInterval); bufferStatusInterval = null; }
-    // Se usa el estado real del <video> (no la variable isActuallyPlaying) para
-    // evitar depender del orden de ejecución entre listeners del mismo evento.
-    if (!videoEl.paused && videoEl.style.display !== 'none') {
-      centerControls.style.display = 'flex';
-    }
+  function buildServerPanel(servers){
+    serverPanel.innerHTML = '';
+    servers.forEach(function(s){
+      var item = document.createElement('button');
+      item.className = 'menu-item';
+      item.type = 'button';
+      item.setAttribute('data-server-id', s.id);
+
+      var favicon = faviconUrl(s.domain);
+      var faviconHtml = favicon
+        ? '<img class="favicon" src="' + favicon + '" alt="" loading="lazy" data-fallback-hide="1" />'
+        : '<span class="favicon"></span>';
+
+      item.innerHTML = faviconHtml +
+        '<span class="label-group">' +
+          '<span class="name">' + escapeHtml(s.servidor) + '</span>' +
+          '<span class="sub">' + escapeHtml(s.calidad) + '</span>' +
+        '</span>';
+      item.addEventListener('click', function(e){
+        e.stopPropagation();
+        selectServer(s);
+        closeMenus(null);
+      });
+      serverPanel.appendChild(item);
+
+      var faviconImg = item.querySelector('img.favicon');
+      if(faviconImg){
+        faviconImg.addEventListener('error', function(){
+          faviconImg.style.visibility = 'hidden';
+        });
+      }
+    });
   }
 
-  videoEl.addEventListener('waiting', showBufferSpinner);
-  videoEl.addEventListener('canplay', hideBufferSpinner);
-  videoEl.addEventListener('seeking', showBufferSpinner);
-  videoEl.addEventListener('seeked', () => { if (!videoEl.paused) hideBufferSpinner(); });
-  // Zonas táctiles: doble-tap izquierda = -10s, centro = play/pause, derecha = +10s.
-  // Un solo tap en cualquier zona alterna play/pause (comportamiento simple);
-  // el doble-tap en los laterales hace seek en vez de eso.
-  let lastTapTime = 0;
-  let lastTapZone = null;
+  async function selectServer(server){
+    currentServer = server;
+    Array.prototype.forEach.call(serverPanel.children, function(el){
+      el.classList.toggle('active', el.getAttribute('data-server-id') === server.id);
+    });
 
-  function getTapZone(clientX) {
-    const rect = videoEl.getBoundingClientRect();
-    const ratio = (clientX - rect.left) / rect.width;
-    if (ratio < 1 / 3) return 'left';
-    if (ratio > 2 / 3) return 'right';
-    return 'center';
-  }
+    setPlayerState('<div class="spinner"></div><div>Buscando reproducción...</div>');
 
-  function showSeekIndicator(zone) {
-    const el = zone === 'left' ? seekIndicatorLeft : seekIndicatorRight;
-    el.classList.remove('flash');
-    void el.offsetWidth; // reinicia la animación si ya estaba corriendo
-    el.classList.add('flash');
-  }
+    try{
+      var res = await fetch('/api/resolve?token=' + encodeURIComponent(server.token));
+      var data = await res.json();
 
-  videoEl.addEventListener('click', (e) => {
-    const zone = getTapZone(e.clientX);
-    const now = Date.now();
-    const isDoubleTap = now - lastTapTime < 350 && lastTapZone === zone;
-    lastTapTime = now;
-    lastTapZone = zone;
+      // Diagnóstico visible en la consola del navegador (sin secretos):
+      // mode = "mediaflow" (HLS ok) o "iframe_fallback"; reason = por qué
+      // MediaFlow no se usó (ej. mediaflow_not_configured, mediaflow_status_401).
+      console.log('[player] resolve', server.servidor, '->', data.mode || data.error, data.reason || '');
 
-    if (isDoubleTap && zone === 'left') {
-      videoEl.currentTime = Math.max(0, videoEl.currentTime - 10);
-      showSeekIndicator('left');
-      showUiTemporarily();
-      return;
-    }
-    if (isDoubleTap && zone === 'right') {
-      videoEl.currentTime = Math.min(videoEl.duration || Infinity, videoEl.currentTime + 10);
-      showSeekIndicator('right');
-      showUiTemporarily();
-      return;
-    }
-
-    // Tap simple: si la interfaz está oculta, el primer toque solo la muestra
-    // (no reproduce/pausa). Con la interfaz ya visible, el tap en el centro
-    // alterna play/pause como antes.
-    const uiWasHidden = wasUiHiddenBeforeTap;
-    if (uiWasHidden) {
-      showUiTemporarily();
-      return;
-    }
-    if (zone === 'center') {
-      if (videoEl.paused) videoEl.play().catch(() => {});
-      else videoEl.pause();
-    } else {
-      showUiTemporarily();
-    }
-  });
-
-  backBtn.addEventListener('click', () => { videoEl.currentTime = Math.max(0, videoEl.currentTime - 10); });
-  fwdBtn.addEventListener('click', () => { videoEl.currentTime = Math.min(videoEl.duration || Infinity, videoEl.currentTime + 10); });
-
-  function updateMuteIcon() {
-    const effectiveVolume = videoEl.muted ? 0 : (audioGainNode ? audioGainNode.gain.value : videoEl.volume);
-    const icon = effectiveVolume === 0 ? 'solar:volume-cross-bold' : 'solar:volume-loud-bold';
-    muteBtn.innerHTML = '<iconify-icon icon="' + icon + '"></iconify-icon>';
-  }
-  muteBtn.addEventListener('click', () => {
-    videoEl.muted = !videoEl.muted;
-    updateMuteIcon();
-  });
-
-  // ---------- Amplificación de volumen + Normalización (Web Audio API) ----------
-  // El <video>.volume nativo solo llega a 1.0 (100%); para superar ese límite
-  // (como VLC) se enruta el audio por un GainNode. Se crea una sola vez por
-  // <video> porque createMediaElementSource no puede llamarse dos veces sobre
-  // el mismo elemento. Un DynamicsCompressorNode opcional (normalización de
-  // volumen) puede insertarse/quitarse de la cadena sin recrear el grafo.
-  let audioCtx = null;
-  let audioGainNode = null;
-  let audioSourceNode = null;
-  let audioCompressorNode = null;
-  let normalizationEnabled = false;
-
-  function ensureAudioGraph() {
-    if (audioGainNode) return; // ya inicializado
-    try {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      audioCtx = new Ctx();
-      audioSourceNode = audioCtx.createMediaElementSource(videoEl);
-      audioGainNode = audioCtx.createGain();
-      audioGainNode.gain.value = 1;
-
-      audioCompressorNode = audioCtx.createDynamicsCompressor();
-      // Ajustes típicos de normalización/limitador suave, similares a lo que
-      // hacen reproductores como VLC con su opción "Normalizar volumen".
-      audioCompressorNode.threshold.value = -24;
-      audioCompressorNode.knee.value = 30;
-      audioCompressorNode.ratio.value = 12;
-      audioCompressorNode.attack.value = 0.003;
-      audioCompressorNode.release.value = 0.25;
-
-      audioSourceNode.connect(audioGainNode);
-      rewireCompressor();
-    } catch (e) {
-      // Si Web Audio no está disponible o falla, se mantiene el volumen nativo (máx. 100%).
-      audioGainNode = null;
-    }
-  }
-
-  // Conecta gain -> compressor -> destino (normalización activa) o
-  // gain -> destino directo (normalización desactivada / bypass real).
-  function rewireCompressor() {
-    if (!audioGainNode) return;
-    audioGainNode.disconnect();
-    audioCompressorNode.disconnect();
-    if (normalizationEnabled) {
-      audioGainNode.connect(audioCompressorNode).connect(audioCtx.destination);
-    } else {
-      audioGainNode.connect(audioCtx.destination);
-    }
-  }
-
-  normalizeToggleRow.addEventListener('click', () => {
-    normalizationEnabled = !normalizationEnabled;
-    normalizeToggle.classList.toggle('on', normalizationEnabled);
-    ensureAudioGraph();
-    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
-    rewireCompressor();
-  });
-
-  // ---------- Screen Wake Lock: evita que la pantalla se apague reproduciendo ----------
-
-  let wakeLock = null;
-  let noSleepVideo = null;
-
-  async function requestWakeLock() {
-    if ('wakeLock' in navigator) {
-      try {
-        wakeLock = await navigator.wakeLock.request('screen');
-        wakeLock.addEventListener('release', () => { wakeLock = null; });
+      if(!data.success){
+        setPlayerState('<div>No se pudo procesar este servidor</div>');
         return;
-      } catch (e) {
-        // cae al fallback de abajo
       }
+
+      mountPlayer(data, server);
+    }catch(err){
+      setPlayerState('<div>No se pudo procesar este servidor</div>');
     }
-    // Fallback para navegadores/WebViews sin Wake Lock API: un <video> mudo,
-    // en loop, de 1x1, reproduciéndose en segundo plano. Es la técnica estándar
-    // ("NoSleep.js") porque el propio sistema evita apagar la pantalla mientras
-    // hay un elemento de video activo. No es 100% garantizado en todos los SO.
-    if (!noSleepVideo) {
-      noSleepVideo = document.createElement('video');
-      noSleepVideo.setAttribute('playsinline', '');
-      noSleepVideo.muted = true;
-      noSleepVideo.loop = true;
-      noSleepVideo.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;';
-      // Fuente generada en el propio navegador (canvas -> MediaStream) para no
-      // depender de un archivo de video embebido a mano.
-      const canvas = document.createElement('canvas');
-      canvas.width = 2; canvas.height = 2;
-      const ctx2d = canvas.getContext('2d');
-      let toggleFlag = false;
-      setInterval(() => {
-        toggleFlag = !toggleFlag;
-        ctx2d.fillStyle = toggleFlag ? '#000' : '#010101';
-        ctx2d.fillRect(0, 0, 2, 2);
-      }, 1000);
-      const stream = canvas.captureStream ? canvas.captureStream(1) : null;
-      if (stream) {
-        noSleepVideo.srcObject = stream;
-      }
-      document.body.appendChild(noSleepVideo);
-    }
-    noSleepVideo.play().catch(() => {});
   }
 
-  function releaseWakeLock() {
-    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
-    if (noSleepVideo) { noSleepVideo.pause(); }
-  }
+  function mountPlayer(data, server){
+    destroyPlayer();
+    playerWrap.innerHTML = '';
 
-  // Vuelve a pedir el wake lock si la pestaña recupera visibilidad mientras el video sigue reproduciendo.
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && isActuallyPlaying) requestWakeLock();
-  });
-
-  volumeSlider.addEventListener('input', () => {
-    const value = parseFloat(volumeSlider.value); // 0 a 3 (0% a 300%)
-    ensureAudioGraph();
-    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
-
-    if (audioGainNode) {
-      // Con el grafo de Web Audio activo, el <video>.volume se deja fijo en 1
-      // y toda la ganancia (incluida la atenuación 0-100%) la controla el GainNode.
-      videoEl.volume = 1;
-      audioGainNode.gain.value = value;
+    if(data.type === 'hls' && data.url){
+      buildCustomPlayer(data.url, server);
+    } else if(data.type === 'iframe' && data.url){
+      mountIframe(data.url);
     } else {
-      // Fallback sin Web Audio: se limita al rango nativo 0-100%.
-      videoEl.volume = Math.min(1, value);
+      setPlayerState('<div>No se pudo procesar este servidor</div>');
+    }
+  }
+
+  function mountIframe(url){
+    destroyPlayer();
+    playerWrap.innerHTML = '';
+    var iframe = document.createElement('iframe');
+    iframe.src = url;
+    iframe.allow = 'autoplay; fullscreen; picture-in-picture';
+    iframe.allowFullscreen = true;
+    playerWrap.appendChild(iframe);
+  }
+
+  var fallbackTriggered = false;
+
+  // Si el HLS resuelto por MediaFlow falla en tiempo de reproducción (404,
+  // error de red, manifest corrupto, etc.), en vez de dejar el player
+  // pausado/roto se pide directamente el iframe original del mismo servidor
+  // (sin reintentar MediaFlow) y se reemplaza el player por él.
+  function fallbackToIframeOnError(server){
+    if(fallbackTriggered) return;
+    // Si el usuario ya cambió a otro servidor, este error no le corresponde.
+    if(currentServer && server && currentServer.id !== server.id) return;
+    fallbackTriggered = true;
+
+    setPlayerState('<div class="spinner"></div><div>Buscando reproducción...</div>');
+
+    fetch('/api/resolve?token=' + encodeURIComponent(server.token) + '&force_iframe=1')
+      .then(function(res){ return res.json(); })
+      .then(function(data){
+        if(data && data.success && data.type === 'iframe' && data.url){
+          mountIframe(data.url);
+        } else {
+          setPlayerState('<div>No se pudo procesar este servidor</div>');
+        }
+      })
+      .catch(function(){
+        setPlayerState('<div>No se pudo procesar este servidor</div>');
+      });
+  }
+
+  // ---------------------------------------------------------------
+  // Reproductor propio: <video> nativo + hls.js (solo motor) + controles
+  // custom con Tabler Icons (Iconify).
+  // ---------------------------------------------------------------
+  var activePlayer = null; // { destroy() } del reproductor montado
+
+  function destroyPlayer(){
+    if(activePlayer){
+      try{ activePlayer.destroy(); }catch(e){}
+      activePlayer = null;
+    }
+  }
+
+  function fmtTime(sec){
+    if(!isFinite(sec) || sec < 0) sec = 0;
+    sec = Math.floor(sec);
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    var ss = (s < 10 ? '0' : '') + s;
+    return h > 0 ? (h + ':' + (m < 10 ? '0' : '') + m + ':' + ss) : (m + ':' + ss);
+  }
+
+  function icon(name, size){
+    return '<iconify-icon icon="tabler:' + name + '" width="' + size + '" height="' + size + '"></iconify-icon>';
+  }
+
+  function buildCustomPlayer(url, server){
+    fallbackTriggered = false;
+
+    var wrap = document.createElement('div');
+    wrap.className = 'vplayer';
+    wrap.tabIndex = 0;
+
+    var video = document.createElement('video');
+    video.playsInline = true;
+    video.setAttribute('playsinline', '');
+    video.autoplay = true;
+    wrap.appendChild(video);
+
+    wrap.insertAdjacentHTML('beforeend',
+      '<div class="vp-buffering" data-r="buffering"></div>' +
+      '<div class="vp-center" data-r="centerLayer">' +
+        '<button class="vp-cbtn" type="button" data-r="back" aria-label="Retroceder 10 segundos">' + icon('rewind-backward-10', 30) + '</button>' +
+        '<button class="vp-cbtn main" type="button" data-r="center" aria-label="Reproducir/Pausar">' + icon('player-play-filled', 34) + '</button>' +
+        '<button class="vp-cbtn" type="button" data-r="fwd" aria-label="Adelantar 10 segundos">' + icon('rewind-forward-10', 30) + '</button>' +
+      '</div>' +
+      '<div class="vp-controls" data-r="controls">' +
+        '<div class="vp-progress" data-r="progress"><div class="vp-track" data-r="track">' +
+          '<div class="vp-buffered" data-r="buffered"></div><div class="vp-played" data-r="played"></div><div class="vp-thumb" data-r="thumb"></div>' +
+        '</div></div>' +
+        '<div class="vp-row">' +
+          '<button class="vp-btn" type="button" data-r="play" aria-label="Reproducir/Pausar">' + icon('player-play-filled', 22) + '</button>' +
+          '<div class="vp-volume">' +
+            '<button class="vp-btn" type="button" data-r="mute" aria-label="Silenciar">' + icon('volume', 22) + '</button>' +
+            '<div class="vp-vol-track" data-r="volTrack"><div class="vp-vol-bg"><div class="vp-vol-fill" data-r="volFill"></div></div></div>' +
+          '</div>' +
+          '<span class="vp-time" data-r="time">0:00 / 0:00</span>' +
+          '<span class="spacer"></span>' +
+          '<button class="vp-btn" type="button" data-r="gear" aria-label="Ajustes">' + icon('settings', 22) + '</button>' +
+          '<button class="vp-btn" type="button" data-r="pip" aria-label="Picture in Picture">' + icon('picture-in-picture', 22) + '</button>' +
+          '<button class="vp-btn" type="button" data-r="fs" aria-label="Pantalla completa">' + icon('maximize', 22) + '</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="vp-settings" data-r="settings"></div>');
+    playerWrap.appendChild(wrap);
+
+    var r = {};
+    Array.prototype.forEach.call(wrap.querySelectorAll('[data-r]'), function(el){ r[el.getAttribute('data-r')] = el; });
+    function setIcon(btn, name){ btn.querySelector('iconify-icon').setAttribute('icon', 'tabler:' + name); }
+
+    var hls = null, hideTimer = null, startTimer = null, disposed = false, mediaRecovered = false;
+    var started = false;
+
+    // ---- Ajustes: velocidad, calidad y audio ----
+    var SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+    var menuView = null; // null = cerrado | 'main' | 'speed' | 'quality' | 'audio'
+    var langNames = null;
+    try{ langNames = new Intl.DisplayNames(['es'], { type: 'language' }); }catch(e){}
+
+    function esc(s){ return escapeHtml(String(s)); }
+
+    // Calidades que expone el manifest (solo si hay 2 o más).
+    function qualityOptions(){
+      if(!hls || !hls.levels || hls.levels.length < 2) return [];
+      var opts = hls.levels.map(function(lv, i){
+        var kbps = Math.round((lv.bitrate || 0) / 1000);
+        return { index: i, height: lv.height || 0, kbps: kbps, base: lv.height ? lv.height + 'p' : (kbps + ' kbps') };
+      });
+      var count = {};
+      opts.forEach(function(o){ count[o.base] = (count[o.base] || 0) + 1; });
+      opts.forEach(function(o){ o.label = count[o.base] > 1 ? (o.base + ' · ' + o.kbps + ' kbps') : o.base; });
+      opts.sort(function(a, b){ return (b.height - a.height) || (b.kbps - a.kbps); });
+      return opts;
     }
 
-    videoEl.muted = value === 0;
-    updateMuteIcon();
-  });
-
-  // El primer gesto del usuario (play) es también el momento de habilitar el
-  // grafo de audio, ya que los navegadores requieren interacción para AudioContext.
-  playBtn.addEventListener('click', () => { ensureAudioGraph(); }, { once: true });
-
-  pipBtn.addEventListener('click', async () => {
-    try {
-      if (document.pictureInPictureElement) {
-        await document.exitPictureInPicture();
-      } else if (document.pictureInPictureEnabled) {
-        await videoEl.requestPictureInPicture();
-      }
-    } catch (e) {}
-  });
-
-  function updateFullscreenIcon() {
-    const isFs = !!document.fullscreenElement;
-    fullscreenBtn.innerHTML = '<iconify-icon icon="' + (isFs ? 'solar:minimize-square-2-bold' : 'solar:maximize-bold') + '"></iconify-icon>';
-  }
-  fullscreenBtn.addEventListener('click', async () => {
-    try {
-      if (document.fullscreenElement) {
-        await document.exitFullscreen();
-      } else {
-        await playerWrap.requestFullscreen();
-      }
-    } catch (e) {}
-  });
-  document.addEventListener('fullscreenchange', updateFullscreenIcon);
-
-  // ---------- Settings: velocidad + calidad ----------
-
-  const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
-
-  function renderSpeedOptions() {
-    speedOptions.innerHTML = '';
-    SPEEDS.forEach(speed => {
-      const opt = document.createElement('div');
-      const label = speed === 1 ? 'Normal' : speed + 'x';
-      opt.className = 'settings-option' + (videoEl.playbackRate === speed ? ' active' : '');
-      opt.innerHTML = '<span>' + label + '</span><iconify-icon icon="solar:check-circle-bold" class="check"></iconify-icon>';
-      opt.addEventListener('click', () => {
-        videoEl.playbackRate = speed;
-        renderSpeedOptions();
-        showSettingsPage('pageRoot');
+    // Pistas de audio que expone el manifest (solo si hay 2 o más).
+    function audioOptions(){
+      if(!hls || !hls.audioTracks || hls.audioTracks.length < 2) return [];
+      var opts = hls.audioTracks.map(function(t, i){
+        var name = t.name ? String(t.name).trim() : '';
+        var lang = t.lang ? String(t.lang).trim() : '';
+        var pretty = '';
+        if(lang && langNames){ try{ pretty = langNames.of(lang) || ''; }catch(e){} }
+        return { index: i, name: name, label: pretty || name || lang || ('Pista ' + (i + 1)) };
       });
-      speedOptions.appendChild(opt);
-      if (videoEl.playbackRate === speed) speedCurrentLabel.textContent = label;
-    });
-  }
+      var count = {};
+      opts.forEach(function(o){ count[o.label] = (count[o.label] || 0) + 1; });
+      opts.forEach(function(o){ if(count[o.label] > 1) o.label += ' · ' + (o.name || (o.index + 1)); });
+      return opts;
+    }
 
-  // La calidad solo se muestra si hls.js expone niveles reales (varias resoluciones).
-  // Si el HLS no trae niveles múltiples, la sección se oculta por completo.
-  function renderQualityOptions() {
-    if (!hlsInstance || !hlsInstance.levels || hlsInstance.levels.length <= 1) {
-      qualityMenuItem.style.display = 'none';
+    function speedText(){ return video.playbackRate === 1 ? 'Normal' : (video.playbackRate + 'x'); }
+    function qualityText(){
+      if(!hls) return '';
+      if(hls.autoLevelEnabled){
+        var lv = hls.levels && hls.levels[hls.currentLevel];
+        return lv && lv.height ? ('Auto (' + lv.height + 'p)') : 'Auto';
+      }
+      var cur = hls.levels && hls.levels[hls.currentLevel];
+      return cur ? (cur.height ? cur.height + 'p' : Math.round((cur.bitrate || 0) / 1000) + ' kbps') : 'Auto';
+    }
+    function audioText(){
+      var sel = null;
+      audioOptions().forEach(function(o){ if(o.index === hls.audioTrack) sel = o; });
+      return sel ? sel.label : '';
+    }
+
+    function menuRow(view, iconName, label, value){
+      return '<button class="vp-mi" type="button" data-act="open" data-val="' + view + '">' +
+        icon(iconName, 18) + '<span class="vp-mi-l">' + esc(label) + '</span>' +
+        '<span class="vp-mi-v">' + esc(value) + '</span>' + icon('chevron-right', 16) + '</button>';
+    }
+    function menuOption(val, label, active){
+      return '<button class="vp-mi' + (active ? ' active' : '') + '" type="button" data-act="pick" data-val="' + esc(val) + '">' +
+        '<span class="vp-check">' + (active ? icon('check', 16) : '') + '</span>' +
+        '<span class="vp-mi-l">' + esc(label) + '</span></button>';
+    }
+
+    function renderMenu(){
+      if(!menuView){ r.settings.classList.remove('open'); return; }
+      var q = qualityOptions(), a = audioOptions(), html = '';
+      // Si la sección abierta dejó de existir (p. ej. cambió el manifest), volver al menú principal.
+      if((menuView === 'quality' && !q.length) || (menuView === 'audio' && !a.length)) menuView = 'main';
+
+      if(menuView === 'main'){
+        html += menuRow('speed', 'gauge', 'Velocidad', speedText());
+        if(q.length) html += menuRow('quality', 'adjustments-horizontal', 'Calidad', qualityText());
+        if(a.length) html += menuRow('audio', 'language', 'Audio', audioText());
+      } else {
+        var titles = { speed: 'Velocidad', quality: 'Calidad', audio: 'Audio' };
+        html += '<button class="vp-mi vp-mi-head" type="button" data-act="back">' + icon('chevron-left', 18) +
+                '<span class="vp-mi-l">' + titles[menuView] + '</span></button>';
+        if(menuView === 'speed'){
+          SPEEDS.forEach(function(s){ html += menuOption(String(s), s === 1 ? 'Normal' : (s + 'x'), video.playbackRate === s); });
+        } else if(menuView === 'quality'){
+          html += menuOption('-1', 'Auto', hls.autoLevelEnabled);
+          q.forEach(function(o){ html += menuOption(String(o.index), o.label, !hls.autoLevelEnabled && hls.currentLevel === o.index); });
+        } else if(menuView === 'audio'){
+          a.forEach(function(o){ html += menuOption(String(o.index), o.label, hls.audioTrack === o.index); });
+        }
+      }
+      r.settings.innerHTML = html;
+      r.settings.classList.add('open');
+    }
+
+    function openMenu(){ menuView = 'main'; renderMenu(); showControls(); }
+    function closeMenu(){ menuView = null; renderMenu(); showControls(); }
+    function refreshMenuIfOpen(){ if(menuView) renderMenu(); }
+
+    function applyChoice(view, val){
+      if(view === 'speed'){ video.playbackRate = parseFloat(val); }
+      else if(view === 'quality' && hls){ hls.currentLevel = parseInt(val, 10); } // -1 = automática
+      else if(view === 'audio' && hls){ hls.audioTrack = parseInt(val, 10); }
+    }
+
+    r.gear.addEventListener('click', function(){ if(menuView){ closeMenu(); } else { openMenu(); } });
+    r.settings.addEventListener('click', function(e){
+      var t = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
+      if(!t) return;
+      var act = t.getAttribute('data-act'), val = t.getAttribute('data-val');
+      if(act === 'open'){ menuView = val; }
+      else if(act === 'back'){ menuView = 'main'; }
+      else if(act === 'pick'){ applyChoice(menuView, val); menuView = 'main'; }
+      renderMenu();
+      if(e.stopPropagation) e.stopPropagation();
+    });
+    video.addEventListener('ratechange', refreshMenuIfOpen);
+
+
+    function fail(reason){
+      if(disposed) return;
+      console.log('[player] error de reproducción ->', reason, '-> embed');
+      fallbackToIframeOnError(server);
+    }
+
+    // ---- Carga del stream: hls.js (motor) o HLS nativo (Safari/iOS) ----
+    if(window.Hls && Hls.isSupported()){
+      hls = new Hls({ enableWorker: true, lowLatencyMode: false });
+      hls.on(Hls.Events.MANIFEST_PARSED, refreshMenuIfOpen);
+      hls.on(Hls.Events.LEVEL_SWITCHED, refreshMenuIfOpen);
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, refreshMenuIfOpen);
+      hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, refreshMenuIfOpen);
+      hls.on(Hls.Events.ERROR, function(ev, data){
+        if(!data || !data.fatal) return;
+        var detail = data.type + '/' + data.details + (data.response && data.response.code !== undefined ? ' (HTTP ' + data.response.code + ')' : '');
+        // Un único intento de recuperación para errores de decodificación.
+        if(data.type === Hls.ErrorTypes.MEDIA_ERROR && !mediaRecovered){
+          mediaRecovered = true;
+          console.log('[player] hls media error, reintentando:', detail);
+          hls.recoverMediaError();
+          return;
+        }
+        // Red caída, 404, código 0, manifest inválido, etc.: directo al embed.
+        fail(detail);
+      });
+      hls.loadSource(url);
+      hls.attachMedia(video);
+    } else if(video.canPlayType('application/vnd.apple.mpegurl')){
+      video.src = url;
+    } else {
+      fail('navegador sin soporte HLS');
       return;
     }
-    qualityMenuItem.style.display = 'flex';
-    qualityOptions.innerHTML = '';
 
-    const autoOpt = document.createElement('div');
-    autoOpt.className = 'settings-option' + (hlsInstance.currentLevel === -1 ? ' active' : '');
-    autoOpt.innerHTML = '<span>Automática</span><iconify-icon icon="solar:check-circle-bold" class="check"></iconify-icon>';
-    autoOpt.addEventListener('click', () => {
-      hlsInstance.currentLevel = -1;
-      renderQualityOptions();
-      showSettingsPage('pageRoot');
+    video.addEventListener('error', function(){
+      var e = video.error;
+      fail('video.error ' + (e ? e.code : '?'));
     });
-    qualityOptions.appendChild(autoOpt);
-    if (hlsInstance.currentLevel === -1) qualityCurrentLabel.textContent = 'Automática';
 
-    hlsInstance.levels.forEach((level, idx) => {
-      const label = level.height ? level.height + 'p' : Math.round(level.bitrate / 1000) + ' kbps';
-      const opt = document.createElement('div');
-      opt.className = 'settings-option' + (hlsInstance.currentLevel === idx ? ' active' : '');
-      opt.innerHTML = '<span>' + label + '</span><iconify-icon icon="solar:check-circle-bold" class="check"></iconify-icon>';
-      opt.addEventListener('click', () => {
-        hlsInstance.currentLevel = idx;
-        renderQualityOptions();
-        showSettingsPage('pageRoot');
-      });
-      qualityOptions.appendChild(opt);
-      if (hlsInstance.currentLevel === idx) qualityCurrentLabel.textContent = label;
+    // Red de seguridad: si en 15 s no hay ni metadatos ni reproducción.
+    startTimer = setTimeout(function(){ if(!started) fail('sin respuesta en 15 s'); }, 15000);
+    function markStarted(){ started = true; clearTimeout(startTimer); }
+    video.addEventListener('loadedmetadata', function(){
+      markStarted();
+      var b = video.getBoundingClientRect();
+      console.log('[player] video ' + (video.videoWidth || 0) + 'x' + (video.videoHeight || 0) + ' | elemento ' + Math.round(b.width) + 'x' + Math.round(b.height));
+      updateProgress();
     });
-  }
+    video.addEventListener('playing', markStarted);
+    video.addEventListener('canplay', markStarted);
 
-  renderSpeedOptions();
+    // ---- Play / pausa ----
+    function refreshPlayIcons(){
+      var n = video.paused ? 'player-play-filled' : 'player-pause-filled';
+      setIcon(r.play, n); setIcon(r.center, n);
+    }
+    function togglePlay(){
+      if(video.paused){ var p = video.play(); if(p && p.catch) p.catch(function(){}); } else { video.pause(); }
+    }
+    r.play.addEventListener('click', togglePlay);
+    r.center.addEventListener('click', togglePlay);
+    // Tocar el vídeo ya NO pausa/reproduce: muestra u oculta la interfaz.
+    // Con ratón los controles ya aparecen al mover el puntero, así que un
+    // clic solo los muestra; con dedo/lápiz el toque los alterna.
+    video.addEventListener('click', function(){
+      if(menuView){ closeMenu(); return; } // el primer toque solo cierra el menú
+      if(controlsHidden() || lastPointerType === 'mouse'){ showControls(); }
+      else { hideControls(); }
+    });
+    video.addEventListener('play', function(){ refreshPlayIcons(); showControls(); });
+    video.addEventListener('pause', function(){ refreshPlayIcons(); showControls(); });
+    function setBuffering(on){
+      if(on){ r.buffering.classList.add('on'); wrap.classList.add('is-buffering'); }
+      else { r.buffering.classList.remove('on'); wrap.classList.remove('is-buffering'); }
+    }
+    video.addEventListener('waiting', function(){ setBuffering(true); });
+    video.addEventListener('playing', function(){ setBuffering(false); refreshPlayIcons(); });
+    video.addEventListener('canplay', function(){ setBuffering(false); });
 
-  videoEl.addEventListener('timeupdate', () => {
-    if (!videoEl.duration) return;
-    const pct = (videoEl.currentTime / videoEl.duration) * 100;
-    progressFilled.style.width = pct + '%';
-    progressThumb.style.left = pct + '%';
-    timeCurrent.textContent = formatTime(videoEl.currentTime);
-  });
-  videoEl.addEventListener('loadedmetadata', () => {
-    timeDuration.textContent = formatTime(videoEl.duration);
-  });
-  videoEl.addEventListener('progress', () => {
-    if (!videoEl.duration || !videoEl.buffered.length) return;
-    const end = videoEl.buffered.end(videoEl.buffered.length - 1);
-    progressBuffered.style.width = (end / videoEl.duration) * 100 + '%';
-  });
+    // ---- ±10 s ----
+    r.back.addEventListener('click', function(){ video.currentTime = Math.max(0, video.currentTime - 10); });
+    r.fwd.addEventListener('click', function(){
+      var d = isFinite(video.duration) ? video.duration : Infinity;
+      video.currentTime = Math.min(d, video.currentTime + 10);
+    });
 
-  function seekFromEvent(clientX) {
-    const rect = progressTrack.getBoundingClientRect();
-    const pct = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    if (videoEl.duration) videoEl.currentTime = pct * videoEl.duration;
-  }
-  let seeking = false;
-  progressTrack.addEventListener('pointerdown', (e) => { seeking = true; seekFromEvent(e.clientX); });
-  window.addEventListener('pointermove', (e) => { if (seeking) seekFromEvent(e.clientX); });
-  window.addEventListener('pointerup', () => { seeking = false; });
+    // ---- Progreso ----
+    // La línea roja y el punto siguen al dedo/puntero al instante (no esperan
+    // al reloj del vídeo). El salto real se aplica al soltar, para no lanzar
+    // decenas de peticiones HLS mientras se arrastra.
+    var scrubbing = false;   // arrastrando/tocando la barra
+    var pendingSeek = false; // salto aplicado, esperando el evento "seeked"
+    var scrubFrac = 0;       // posición elegida (0..1)
 
-  // Atajos de teclado
-  document.addEventListener('keydown', (e) => {
-    if (videoEl.style.display === 'none') return;
-    if (e.code === 'Space') { e.preventDefault(); playPauseBtn.click(); }
-    else if (e.code === 'ArrowLeft') { backBtn.click(); }
-    else if (e.code === 'ArrowRight') { fwdBtn.click(); }
-    else if (e.code === 'KeyM') { muteBtn.click(); }
-    else if (e.code === 'KeyF') { fullscreenBtn.click(); }
-    showUiTemporarily();
-  });
-
-  // ---------- Auto-ocultado de controles tras 3s de inactividad ----------
-  // Solo se activa cuando el video está reproduciéndose de verdad (evento
-  // 'playing', no solo 'play'), nunca mientras carga, está en pausa, en el
-  // gate/backdrop, o con un dropdown abierto.
-
-  let hideUiTimer = null;
-  let isActuallyPlaying = false;
-
-  function showUi() {
-    playerWrap.classList.remove('ui-hidden');
-  }
-
-  function scheduleHideUi() {
-    if (hideUiTimer) clearTimeout(hideUiTimer);
-    hideUiTimer = setTimeout(() => {
-      const dropdownOpen = langDropdown.classList.contains('open') ||
-        serversDropdown.classList.contains('open') || settingsDropdown.classList.contains('open');
-      if (isActuallyPlaying && !videoEl.paused && !dropdownOpen) {
-        playerWrap.classList.add('ui-hidden');
+    function paintProgress(frac){
+      var pct = Math.min(100, Math.max(0, frac * 100));
+      r.played.style.width = pct + '%';
+      r.thumb.style.left = pct + '%';
+    }
+    function canScrub(){ return video.duration && isFinite(video.duration); }
+    function updateProgress(){
+      var d = video.duration;
+      var hasDur = d && isFinite(d);
+      var following = scrubbing || pendingSeek; // mostrar lo elegido, no el reloj
+      if(hasDur){
+        if(!following) paintProgress(video.currentTime / d);
+        if(video.buffered.length){
+          var end = video.buffered.end(video.buffered.length - 1);
+          r.buffered.style.width = Math.min(100, (end / d) * 100) + '%';
+        }
       }
-    }, 3000);
+      var shown = (following && hasDur) ? scrubFrac * d : video.currentTime;
+      r.time.textContent = fmtTime(shown) + ' / ' + fmtTime(d);
+    }
+    video.addEventListener('timeupdate', updateProgress);
+    video.addEventListener('progress', updateProgress);
+    video.addEventListener('durationchange', updateProgress);
+    video.addEventListener('seeked', function(){ pendingSeek = false; updateProgress(); });
+
+    function pointerFraction(el, ev){
+      var b = el.getBoundingClientRect();
+      return Math.min(1, Math.max(0, (ev.clientX - b.left) / b.width));
+    }
+    function scrubTo(ev){
+      scrubFrac = pointerFraction(r.track, ev);
+      paintProgress(scrubFrac);
+      updateProgress();
+    }
+    function endScrub(commit){
+      if(!scrubbing) return;
+      scrubbing = false;
+      r.progress.classList.remove('scrubbing');
+      if(commit && canScrub()){
+        pendingSeek = true;
+        video.currentTime = scrubFrac * video.duration;
+      }
+      updateProgress();
+      showControls(); // reinicia la cuenta atrás de auto-ocultado
+    }
+    r.progress.addEventListener('pointerdown', function(ev){
+      if(!canScrub()) return;
+      scrubbing = true;
+      r.progress.classList.add('scrubbing');
+      r.progress.setPointerCapture(ev.pointerId);
+      scrubTo(ev);
+    });
+    r.progress.addEventListener('pointermove', function(ev){ if(scrubbing) scrubTo(ev); });
+    r.progress.addEventListener('pointerup', function(ev){
+      if(!scrubbing) return;
+      scrubTo(ev);
+      endScrub(true);
+    });
+    r.progress.addEventListener('pointercancel', function(){ endScrub(false); });
+
+    // ---- Volumen ----
+    function refreshVolume(){
+      var v = video.muted ? 0 : video.volume;
+      r.volFill.style.width = (v * 100) + '%';
+      setIcon(r.mute, v === 0 ? 'volume-3' : (v < 0.5 ? 'volume-2' : 'volume'));
+    }
+    r.mute.addEventListener('click', function(){ video.muted = !video.muted; refreshVolume(); });
+    var draggingVol = false;
+    function setVol(ev){
+      var f = pointerFraction(r.volTrack, ev);
+      video.volume = f; video.muted = f === 0; refreshVolume();
+    }
+    r.volTrack.addEventListener('pointerdown', function(ev){ draggingVol = true; r.volTrack.setPointerCapture(ev.pointerId); setVol(ev); });
+    r.volTrack.addEventListener('pointermove', function(ev){ if(draggingVol) setVol(ev); });
+    r.volTrack.addEventListener('pointerup', function(){ draggingVol = false; });
+    video.addEventListener('volumechange', refreshVolume);
+    refreshVolume();
+
+    // ---- Picture in Picture ----
+    if(document.pictureInPictureEnabled && !video.disablePictureInPicture){
+      r.pip.addEventListener('click', function(){
+        if(document.pictureInPictureElement){ document.exitPictureInPicture().catch(function(){}); }
+        else { video.requestPictureInPicture().catch(function(){}); }
+      });
+    } else {
+      r.pip.style.display = 'none';
+    }
+
+    // ---- Pantalla completa (iPhone solo permite fullscreen del <video>) ----
+    function inFullscreen(){ return !!(document.fullscreenElement || document.webkitFullscreenElement || video.webkitDisplayingFullscreen); }
+    r.fs.addEventListener('click', function(){
+      if(inFullscreen()){
+        if(document.exitFullscreen) document.exitFullscreen().catch(function(){});
+        else if(document.webkitExitFullscreen) document.webkitExitFullscreen();
+        else if(video.webkitExitFullscreen) video.webkitExitFullscreen();
+      } else if(wrap.requestFullscreen){
+        wrap.requestFullscreen().catch(function(){});
+      } else if(wrap.webkitRequestFullscreen){
+        wrap.webkitRequestFullscreen();
+      } else if(video.webkitEnterFullscreen){
+        video.webkitEnterFullscreen();
+      }
+    });
+    function onFsChange(){ setIcon(r.fs, inFullscreen() ? 'minimize' : 'maximize'); }
+    document.addEventListener('fullscreenchange', onFsChange);
+    document.addEventListener('webkitfullscreenchange', onFsChange);
+
+    // ---- Auto-ocultar controles ----
+    var lastPointerType = 'mouse';
+    function controlsHidden(){ return r.controls.classList.contains('hidden'); }
+    function hideControls(){
+      clearTimeout(hideTimer);
+      r.controls.classList.add('hidden');
+      r.centerLayer.classList.add('hidden');
+    }
+    function showControls(){
+      r.controls.classList.remove('hidden');
+      r.centerLayer.classList.remove('hidden');
+      clearTimeout(hideTimer);
+      if(!video.paused && !menuView && !scrubbing){
+        hideTimer = setTimeout(hideControls, 3000);
+      }
+    }
+    // El puntero solo revela los controles si es un ratón; con dedo, el toque
+    // sobre el vídeo los alterna (ver el manejador de "click" del vídeo).
+    wrap.addEventListener('pointerdown', function(ev){ lastPointerType = ev.pointerType || 'mouse'; });
+    wrap.addEventListener('pointermove', function(ev){ if(ev.pointerType === 'mouse') showControls(); });
+    // Usar cualquier control reinicia la cuenta atrás de auto-ocultado.
+    [r.controls, r.centerLayer, r.settings].forEach(function(el){
+      el.addEventListener('pointerdown', function(){ showControls(); });
+    });
+
+    // ---- Atajos de teclado ----
+    wrap.addEventListener('keydown', function(e){
+      if(e.code === 'Space'){ e.preventDefault(); togglePlay(); }
+      else if(e.code === 'ArrowRight'){ r.fwd.click(); }
+      else if(e.code === 'ArrowLeft'){ r.back.click(); }
+      else if(e.code === 'KeyM'){ r.mute.click(); }
+      else if(e.code === 'KeyF'){ r.fs.click(); }
+      else if(e.code === 'Escape' && menuView){ closeMenu(); }
+      showControls();
+    });
+
+    activePlayer = {
+      destroy: function(){
+        disposed = true;
+        clearTimeout(hideTimer); clearTimeout(startTimer);
+        document.removeEventListener('fullscreenchange', onFsChange);
+        document.removeEventListener('webkitfullscreenchange', onFsChange);
+        try{ video.pause(); }catch(e){}
+        if(hls){ hls.destroy(); hls = null; }
+        try{ video.removeAttribute('src'); video.load(); }catch(e){}
+      }
+    };
+
+    refreshPlayIcons();
+    showControls();
+    var pp = video.play(); if(pp && pp.catch) pp.catch(function(){ /* autoplay bloqueado: queda el botón central */ });
   }
 
-  function showUiTemporarily() {
-    showUi();
-    if (isActuallyPlaying) scheduleHideUi();
-  }
-
-  let wasUiHiddenBeforeTap = false;
-  videoEl.addEventListener('pointerdown', () => {
-    wasUiHiddenBeforeTap = playerWrap.classList.contains('ui-hidden');
-  });
-
-  ['mousemove', 'touchstart', 'click', 'pointerdown'].forEach(evt => {
-    playerWrap.addEventListener(evt, (e) => {
-      // El click/tap sobre el propio video lo resuelve su handler dedicado
-      // (decide entre solo-revelar-UI vs play/pause vs seek). mousemove y el
-      // resto de la superficie del player siguen revelando la UI normalmente.
-      if (evt === 'click' && e.target === videoEl) return;
-      showUiTemporarily();
-    }, { passive: true });
-  });
-  videoEl.addEventListener('playing', () => {
-    hideBufferSpinner();
-    isActuallyPlaying = true;
-    showUiTemporarily();
-    requestWakeLock();
-    if (loadTimeoutTimer) { clearTimeout(loadTimeoutTimer); loadTimeoutTimer = null; }
-  });
-  videoEl.addEventListener('waiting', () => { isActuallyPlaying = false; showUi(); });
-  videoEl.addEventListener('pause', () => { isActuallyPlaying = false; showUi(); releaseWakeLock(); });
-  videoEl.addEventListener('ended', () => { isActuallyPlaying = false; releaseWakeLock(); });
-  videoEl.addEventListener('seeking', () => { isActuallyPlaying = false; showUi(); });
-  if (hideUiTimer) clearTimeout(hideUiTimer);
-
-  // Auto-inicio: busca servidores y resuelve el primero automáticamente al cargar.
-  // El usuario solo interactúa para darle play una vez que el stream está listo.
-  fetchServers();
+  init();
 })();
 </script>
 </body>
 </html>`;
+
+  return new Response(html, { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
