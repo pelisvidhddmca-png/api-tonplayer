@@ -16,12 +16,6 @@
  *
  * Las dos fuentes se consultan EN PARALELO.
  *
- * Si Supabase encuentra un servidor:
- *   queda delante de los servidores de PelixPlay.
- *
- * Si una fuente falla:
- *   se utilizan igualmente los resultados de la otra.
- *
  * NSR:
  *   ELIMINADO
  *
@@ -30,11 +24,13 @@
  *   BETA_KV  = Supabase, 6 horas
  *
  * VARIABLES:
+ *
  *   SUPABASE_URL
  *   SUPABASE_ANON_KEY
  *   SOURCE_URL
  *
  * BINDINGS:
+ *
  *   ALPHA_KV
  *   BETA_KV
  *
@@ -43,26 +39,28 @@
  *   GET /health
  *
  *   GET /play/movie/ID
- *
  *   GET /play/movie/ID?force=true
- *
  *   GET /play/movie/ID?fallback=beta
  *
  *   GET /play/tv/ID/SEASON/EPISODE
- *
  *   GET /play/tv/ID/SEASON/EPISODE?force=true
- *
  *   GET /play/tv/ID/SEASON/EPISODE?fallback=beta
+ *
+ * RESPUESTA:
+ *
+ *   JSON normal
  *
  * ================================================================
  */
 
 const ALPHA_CACHE_TTL = 6 * 60 * 60;
-const BETA_CACHE_TTL  = 6 * 60 * 60;
+const BETA_CACHE_TTL = 6 * 60 * 60;
 
-/*
- * Servidores que nunca deben aparecer.
- */
+
+/* ================================================================
+ * BLACKLIST
+ * ================================================================ */
+
 const BLACKLIST = [
   "servidortrinity",
   "servidormahoutokoro",
@@ -72,9 +70,11 @@ const BLACKLIST = [
   "streamplay"
 ];
 
-/*
+
+/* ================================================================
  * CORS
- */
+ * ================================================================ */
+
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
@@ -92,17 +92,22 @@ export default {
     /*
      * Preflight
      */
+
     if (request.method === "OPTIONS") {
+
       return new Response(null, {
         status: 204,
         headers: CORS
       });
     }
 
+
     /*
      * Solo GET
      */
+
     if (request.method !== "GET") {
+
       return jsonResponse({
         success: false,
         status: "method_not_allowed",
@@ -110,18 +115,29 @@ export default {
       }, 405);
     }
 
+
     try {
-      return await router(request, env, ctx);
+
+      return await router(
+        request,
+        env,
+        ctx
+      );
 
     } catch (err) {
 
-      console.error("WORKER ERROR:", err);
+      console.error(
+        "WORKER ERROR:",
+        err
+      );
 
       return jsonResponse({
         success: false,
         status: "worker_error",
         event: "complete",
-        error: err?.message || String(err)
+        error:
+          err?.message ||
+          String(err)
       }, 500);
     }
   }
@@ -132,21 +148,34 @@ export default {
  * ROUTER
  * ================================================================ */
 
-async function router(request, env, ctx) {
+async function router(
+  request,
+  env,
+  ctx
+) {
 
-  const url = new URL(request.url);
+  const url =
+    new URL(request.url);
 
-  const path = url.pathname.replace(/\/+$/, "");
+
+  const path =
+    url.pathname.replace(
+      /\/+$/,
+      ""
+    );
+
 
   /*
-   * Health
+   * HEALTH
    */
+
   if (path === "/health") {
 
     return jsonResponse({
       success: true,
       status: "online",
       event: "complete",
+
       sources: {
         alpha: "PelixPlay",
         beta: "Supabase",
@@ -155,71 +184,125 @@ async function router(request, env, ctx) {
     });
   }
 
+
   /*
    * Parámetros
    */
-  const fallbackBeta = isBetaFallback(
-    url.searchParams.get("fallback")
-  );
 
-  const force = isTrue(
-    url.searchParams.get("force")
-  );
+  const fallbackBeta =
+    isBetaFallback(
+      url.searchParams.get(
+        "fallback"
+      )
+    );
+
+
+  const force =
+    isTrue(
+      url.searchParams.get(
+        "force"
+      )
+    );
+
 
   /*
-   * Movie
+   * MOVIE
    */
-  let match = path.match(
-    /^\/play\/movie\/(\d+)$/
-  );
+
+  let match =
+    path.match(
+      /^\/play\/movie\/(\d+)$/
+    );
+
 
   if (match) {
 
     return processContent({
+
       env,
       ctx,
-      tmdbId: match[1],
-      type: "movie",
-      season: 0,
-      episode: 0,
+
+      tmdbId:
+        match[1],
+
+      type:
+        "movie",
+
+      season:
+        0,
+
+      episode:
+        0,
+
       fallbackBeta,
+
       force
     });
   }
+
 
   /*
    * TV
    */
-  match = path.match(
-    /^\/play\/tv\/(\d+)\/(\d+)\/(\d+)$/
-  );
+
+  match =
+    path.match(
+      /^\/play\/tv\/(\d+)\/(\d+)\/(\d+)$/
+    );
+
 
   if (match) {
 
     return processContent({
+
       env,
       ctx,
-      tmdbId: match[1],
-      type: "tv",
-      season: Number(match[2]),
-      episode: Number(match[3]),
+
+      tmdbId:
+        match[1],
+
+      type:
+        "tv",
+
+      season:
+        Number(match[2]),
+
+      episode:
+        Number(match[3]),
+
       fallbackBeta,
+
       force
     });
   }
 
+
   /*
-   * Not found
+   * NOT FOUND
    */
+
   return jsonResponse({
+
     success: false,
-    status: "not_found",
-    event: "complete",
+
+    status:
+      "not_found",
+
+    event:
+      "complete",
+
     endpoints: {
-      health: "/health",
-      movie: "/play/movie/ID",
-      tv: "/play/tv/ID/SEASON/EPISODE"
+
+      health:
+        "/health",
+
+      movie:
+        "/play/movie/ID",
+
+      tv:
+        "/play/tv/ID/SEASON/EPISODE"
     }
+
   }, 404);
 }
 
@@ -227,77 +310,118 @@ async function router(request, env, ctx) {
 /* ================================================================
  * PROCESS CONTENT
  * ================================================================ */
+
 async function processContent({
+
   env,
   ctx,
+
   tmdbId,
   type,
+
   season,
   episode,
+
   fallbackBeta,
   force
+
 }) {
 
   /*
    * ==============================================================
-   * FALLBACK=BETA
+   * FALLBACK = BETA
    * ==============================================================
    *
    * ?fallback=beta
    *
-   * Consulta solamente Supabase.
+   * Consulta únicamente Supabase.
    */
 
   if (fallbackBeta) {
 
-    const beta = await runBeta({
-      env,
-      ctx,
-      tmdbId,
-      type,
-      season,
-      episode,
-      force
-    });
+    const beta =
+      await runBeta({
 
-    const betaLinks = deduplicateLinks(
-      (beta.links || []).filter(isValidLink)
-    );
+        env,
+        ctx,
+
+        tmdbId,
+        type,
+
+        season,
+        episode,
+
+        force
+      });
+
+
+    const betaLinks =
+      deduplicateLinks(
+        (beta.links || [])
+          .filter(isValidLink)
+      );
+
 
     return jsonResponse({
-      success: betaLinks.length > 0,
 
-      status: betaLinks.length > 0
-        ? "success"
-        : "source_unavailable",
+      success:
+        betaLinks.length > 0,
 
-      event: "complete",
+      status:
+        betaLinks.length > 0
+          ? "success"
+          : "source_unavailable",
 
-      source: "Supabase",
+      event:
+        "complete",
 
-      tmdb_id: tmdbId,
+      source:
+        "Supabase",
+
+      tmdb_id:
+        tmdbId,
+
       type,
+
       season,
+
       episode,
 
-      alpha_source: "PelixPlay",
-      beta_source: "Supabase",
+      alpha_source:
+        "PelixPlay",
 
-      alpha_found: 0,
-      beta_found: betaLinks.length,
+      beta_source:
+        "Supabase",
 
-      alpha_queried: false,
-      beta_queried: true,
+      alpha_found:
+        0,
 
-      found: betaLinks.length,
+      beta_found:
+        betaLinks.length,
 
-      links: betaLinks,
+      alpha_queried:
+        false,
 
-      cache: beta.cache || "miss",
+      beta_queried:
+        true,
 
-      error: beta.error || null,
+      found:
+        betaLinks.length,
 
-      nsr: false
+      links:
+        betaLinks,
+
+      cache:
+        beta.cache ||
+        "miss",
+
+      error:
+        beta.error ||
+        null,
+
+      nsr:
+        false
+
     });
   }
 
@@ -308,7 +432,8 @@ async function processContent({
    * ==============================================================
    *
    * PelixPlay + Supabase
-   * simultáneamente.
+   *
+   * EN PARALELO.
    */
 
   const [
@@ -317,22 +442,30 @@ async function processContent({
   ] = await Promise.all([
 
     runAlpha({
+
       env,
       ctx,
+
       tmdbId,
       type,
+
       season,
       episode,
+
       force
     }),
 
     runBeta({
+
       env,
       ctx,
+
       tmdbId,
       type,
+
       season,
       episode,
+
       force
     })
 
@@ -341,41 +474,56 @@ async function processContent({
 
   /*
    * ==============================================================
-   * LIMPIAR RESULTADOS
+   * LIMPIAR ALPHA
    * ==============================================================
    */
 
-  const alphaLinks = deduplicateLinks(
-    (alpha.links || [])
-      .filter(isValidLink)
-  );
+  const alphaLinks =
+    deduplicateLinks(
 
+      (alpha.links || [])
+        .filter(isValidLink)
 
-  const betaLinks = deduplicateLinks(
-    (beta.links || [])
-      .filter(isValidLink)
-  );
+    );
 
 
   /*
    * ==============================================================
-   * COMBINAR
+   * LIMPIAR BETA
    * ==============================================================
-   *
-   * SUPABASE PRIMERO
-   *
-   * Después PelixPlay.
-   *
-   * Vimeus se prioriza dentro de PelixPlay.
    */
 
-  const combinedLinks = deduplicateLinks([
+  const betaLinks =
+    deduplicateLinks(
 
-    ...betaLinks,
+      (beta.links || [])
+        .filter(isValidLink)
 
-    ...prioritizeVimeus(alphaLinks)
+    );
 
-  ]);
+
+  /*
+   * ==============================================================
+   * COMBINACIÓN
+   * ==============================================================
+   *
+   * SUPABASE PRIMERO.
+   *
+   * DESPUÉS PELIXPLAY.
+   *
+   * VIMEUS se prioriza dentro de PelixPlay.
+   */
+
+  const combinedLinks =
+    deduplicateLinks([
+
+      ...betaLinks,
+
+      ...prioritizeVimeus(
+        alphaLinks
+      )
+
+    ]);
 
 
   /*
@@ -384,26 +532,31 @@ async function processContent({
    * ==============================================================
    */
 
-  let source = "none";
+  let source =
+    "none";
+
 
   if (
     betaLinks.length > 0 &&
     alphaLinks.length > 0
   ) {
 
-    source = "Supabase+PelixPlay";
+    source =
+      "Supabase+PelixPlay";
 
   } else if (
     betaLinks.length > 0
   ) {
 
-    source = "Supabase";
+    source =
+      "Supabase";
 
   } else if (
     alphaLinks.length > 0
   ) {
 
-    source = "PelixPlay";
+    source =
+      "PelixPlay";
   }
 
 
@@ -462,69 +615,123 @@ async function processContent({
       combinedLinks,
 
     /*
-     * Diagnóstico Alpha
+     * ============================================================
+     * DIAGNÓSTICO ALPHA
+     * ============================================================
      */
 
     alpha: {
 
       success:
-        alpha.success || false,
+        alpha.success ||
+        false,
 
       cache:
-        alpha.cache || "miss",
+        alpha.cache ||
+        "miss",
 
       http_code:
-        alpha.http_code ?? null,
+        alpha.http_code ??
+        null,
 
       content_type:
-        alpha.content_type ?? null,
+        alpha.content_type ??
+        null,
 
       elapsed_ms:
-        alpha.elapsed_ms ?? null,
+        alpha.elapsed_ms ??
+        null,
 
       parser:
-        alpha.parser ?? null,
+        alpha.parser ??
+        null,
+
+      raw_keys:
+        alpha.raw_keys ??
+        [],
+
+      all_embeds_languages:
+        alpha.all_embeds_languages ??
+        [],
+
+      all_embeds_urls:
+        alpha.all_embeds_urls ??
+        0,
+
+      all_embeds_valid:
+        alpha.all_embeds_valid ??
+        0,
+
+      all_embeds_discarded:
+        alpha.all_embeds_discarded ??
+        0,
+
+      embeds_urls:
+        alpha.embeds_urls ??
+        0,
+
+      embeds_valid:
+        alpha.embeds_valid ??
+        0,
+
+      embeds_discarded:
+        alpha.embeds_discarded ??
+        0,
 
       error:
-        alpha.error ?? null
+        alpha.error ??
+        null
 
     },
 
+
     /*
-     * Diagnóstico Beta
+     * ============================================================
+     * DIAGNÓSTICO BETA
+     * ============================================================
      */
 
     beta: {
 
       success:
-        beta.success || false,
+        beta.success ||
+        false,
 
       cache:
-        beta.cache || "miss",
+        beta.cache ||
+        "miss",
 
       http_code:
-        beta.http_code ?? null,
+        beta.http_code ??
+        null,
 
       content_type:
-        beta.content_type ?? null,
+        beta.content_type ??
+        null,
 
       elapsed_ms:
-        beta.elapsed_ms ?? null,
+        beta.elapsed_ms ??
+        null,
 
       parser:
-        beta.parser ?? "supabase_rest",
+        beta.parser ||
+        "supabase_rest",
 
       rows_received:
-        beta.rows_received ?? 0,
+        beta.rows_received ??
+        0,
 
       rows_valid:
-        beta.rows_valid ?? 0,
+        beta.rows_valid ??
+        0,
 
       rows_discarded:
-        beta.rows_discarded ?? 0,
+        beta.rows_discarded ??
+        0,
 
       error:
-        beta.error ?? null
+        beta.error ??
+        null
 
     },
 
@@ -534,118 +741,33 @@ async function processContent({
   });
 }
 
-==============================================================
-   * COMBINACIÓN
-   * ==============================================================
-   *
-   * SUPABASE PRIMERO
-   *
-   * Después PelixPlay.
-   *
-   * Ejemplo:
-   *
-   * Supabase:
-   *   Streamwish
-   *   Filelions
-   *
-   * PelixPlay:
-   *   Vimeus
-   *   Streamwish
-   *   Doodstream
-   *
-   * Resultado:
-   *
-   *   Streamwish
-   *   Filelions
-   *   Vimeus
-   *   Doodstream
-   *
-   * Streamwish de PelixPlay se elimina por duplicado.
-   */
-
-  const combinedLinks = deduplicateLinks([
-    ...betaLinks,
-    ...prioritizeVimeus(alphaLinks)
-  ]);
-
-
-  /*
-   * ==============================================================
-   * RESULTADO FINAL
-   * ==============================================================
-   */
-
-  await sendSSE(
-    writer,
-    "complete",
-    {
-      success: combinedLinks.length > 0,
-
-      status: combinedLinks.length > 0
-        ? "success"
-        : "source_unavailable",
-
-      event: "complete",
-
-      source:
-        betaLinks.length > 0 &&
-        alphaLinks.length > 0
-          ? "Supabase+PelixPlay"
-          : betaLinks.length > 0
-            ? "Supabase"
-            : alphaLinks.length > 0
-              ? "PelixPlay"
-              : "none",
-
-      tmdb_id: tmdbId,
-      type,
-      season,
-      episode,
-
-      alpha_source: "PelixPlay",
-      beta_source: "Supabase",
-
-      alpha_found: alphaLinks.length,
-      beta_found: betaLinks.length,
-
-      alpha_queried: true,
-      beta_queried: true,
-
-      found: combinedLinks.length,
-
-      links: combinedLinks,
-
-      nsr: false
-    }
-  );
-
-
-  writer.close();
-
-  return response;
-}
-
 
 /* ================================================================
  * ALPHA = PELIXPLAY
  * ================================================================ */
 
 async function runAlpha({
+
   env,
   ctx,
+
   tmdbId,
   type,
+
   season,
   episode,
+
   force
+
 }) {
 
-  const cacheKey = buildAlphaCacheKey(
-    type,
-    tmdbId,
-    season,
-    episode
-  );
+  const cacheKey =
+    buildAlphaCacheKey(
+      type,
+      tmdbId,
+      season,
+      episode
+    );
 
 
   /*
@@ -654,7 +776,10 @@ async function runAlpha({
    * ==============================================================
    */
 
-  if (!force && env.ALPHA_KV) {
+  if (
+    !force &&
+    env.ALPHA_KV
+  ) {
 
     try {
 
@@ -664,25 +789,47 @@ async function runAlpha({
           "json"
         );
 
+
       if (
         cached &&
-        Array.isArray(cached.links)
+        Array.isArray(
+          cached.links
+        )
       ) {
 
         const links =
           deduplicateLinks(
-            cached.links.filter(isValidLink)
+
+            cached.links
+              .filter(
+                isValidLink
+              )
+
           );
 
-        if (links.length > 0) {
+
+        if (
+          links.length > 0
+        ) {
 
           return {
-            success: true,
-            status: "cache_hit",
+
+            success:
+              true,
+
+            status:
+              "cache_hit",
+
             links,
-            cache: "hit",
-            elapsed_ms: 0,
-            parser: "pelixplay_kv"
+
+            cache:
+              "hit",
+
+            elapsed_ms:
+              0,
+
+            parser:
+              "pelixplay_kv"
           };
         }
       }
@@ -705,18 +852,24 @@ async function runAlpha({
 
   const result =
     await scrapePelixPlay({
+
       env,
+
       tmdbId,
       type,
+
       season,
       episode
+
     });
 
 
   const links =
     deduplicateLinks(
+
       (result.links || [])
         .filter(isValidLink)
+
     );
 
 
@@ -732,25 +885,41 @@ async function runAlpha({
   ) {
 
     ctx.waitUntil(
+
       env.ALPHA_KV.put(
+
         cacheKey,
+
         JSON.stringify({
+
           links,
-          cached_at: Date.now()
+
+          cached_at:
+            Date.now()
+
         }),
+
         {
+
           expirationTtl:
             ALPHA_CACHE_TTL
+
         }
+
       )
     );
   }
 
 
   return {
+
     ...result,
+
     links,
-    cache: "miss"
+
+    cache:
+      "miss"
+
   };
 }
 
@@ -760,21 +929,27 @@ async function runAlpha({
  * ================================================================ */
 
 async function runBeta({
+
   env,
   ctx,
+
   tmdbId,
   type,
+
   season,
   episode,
+
   force
+
 }) {
 
-  const cacheKey = buildBetaCacheKey(
-    type,
-    tmdbId,
-    season,
-    episode
-  );
+  const cacheKey =
+    buildBetaCacheKey(
+      type,
+      tmdbId,
+      season,
+      episode
+    );
 
 
   /*
@@ -783,7 +958,10 @@ async function runBeta({
    * ==============================================================
    */
 
-  if (!force && env.BETA_KV) {
+  if (
+    !force &&
+    env.BETA_KV
+  ) {
 
     try {
 
@@ -793,25 +971,47 @@ async function runBeta({
           "json"
         );
 
+
       if (
         cached &&
-        Array.isArray(cached.links)
+        Array.isArray(
+          cached.links
+        )
       ) {
 
         const links =
           deduplicateLinks(
-            cached.links.filter(isValidLink)
+
+            cached.links
+              .filter(
+                isValidLink
+              )
+
           );
 
-        if (links.length > 0) {
+
+        if (
+          links.length > 0
+        ) {
 
           return {
-            success: true,
-            status: "cache_hit",
+
+            success:
+              true,
+
+            status:
+              "cache_hit",
+
             links,
-            cache: "hit",
-            elapsed_ms: 0,
-            parser: "supabase_kv"
+
+            cache:
+              "hit",
+
+            elapsed_ms:
+              0,
+
+            parser:
+              "supabase_kv"
           };
         }
       }
@@ -834,18 +1034,24 @@ async function runBeta({
 
   const result =
     await fetchSupabase({
+
       env,
+
       tmdbId,
       type,
+
       season,
       episode
+
     });
 
 
   const links =
     deduplicateLinks(
+
       (result.links || [])
         .filter(isValidLink)
+
     );
 
 
@@ -861,25 +1067,41 @@ async function runBeta({
   ) {
 
     ctx.waitUntil(
+
       env.BETA_KV.put(
+
         cacheKey,
+
         JSON.stringify({
+
           links,
-          cached_at: Date.now()
+
+          cached_at:
+            Date.now()
+
         }),
+
         {
+
           expirationTtl:
             BETA_CACHE_TTL
+
         }
+
       )
     );
   }
 
 
   return {
+
     ...result,
+
     links,
-    cache: "miss"
+
+    cache:
+      "miss"
+
   };
 }
 
@@ -889,22 +1111,33 @@ async function runBeta({
  * ================================================================ */
 
 async function scrapePelixPlay({
+
   env,
+
   tmdbId,
   type,
+
   season,
   episode
+
 }) {
 
-  const started = Date.now();
+  const started =
+    Date.now();
 
 
-  if (!env.SOURCE_URL) {
+  if (
+    !env.SOURCE_URL
+  ) {
 
     return failure(
+
       "not_configured",
+
       "SOURCE_URL no está configurado.",
+
       started
+
     );
   }
 
@@ -919,15 +1152,18 @@ async function scrapePelixPlay({
   const params =
     new URLSearchParams();
 
+
   params.set(
     "action",
     "details"
   );
 
+
   params.set(
     "id",
     tmdbId
   );
+
 
   params.set(
     "type",
@@ -935,7 +1171,9 @@ async function scrapePelixPlay({
   );
 
 
-  if (type === "tv") {
+  if (
+    type === "tv"
+  ) {
 
     params.set(
       "season",
@@ -958,34 +1196,50 @@ async function scrapePelixPlay({
 
   try {
 
-    response = await fetch(
-      endpoint,
-      {
-        method: "GET",
-        redirect: "follow",
+    response =
+      await fetch(
 
-        headers: {
-          "Accept":
-            "application/json,text/plain,*/*",
+        endpoint,
 
-          "Accept-Language":
-            "es-ES,es;q=0.9,en;q=0.8",
+        {
 
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-            "AppleWebKit/537.36 " +
-            "Chrome/131.0.0.0 " +
-            "Safari/537.36"
+          method:
+            "GET",
+
+          redirect:
+            "follow",
+
+          headers: {
+
+            "Accept":
+              "application/json,text/plain,*/*",
+
+            "Accept-Language":
+              "es-ES,es;q=0.9,en;q=0.8",
+
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+              "AppleWebKit/537.36 " +
+              "Chrome/131.0.0.0 " +
+              "Safari/537.36"
+
+          }
+
         }
-      }
-    );
+
+      );
 
   } catch (err) {
 
     return failure(
+
       "request_error",
-      err?.message || String(err),
+
+      err?.message ||
+        String(err),
+
       started
+
     );
   }
 
@@ -1005,42 +1259,80 @@ async function scrapePelixPlay({
 
   try {
 
-    data = JSON.parse(text);
+    data =
+      JSON.parse(text);
 
   } catch {
 
     return {
-      success: false,
-      status: "invalid_json",
-      links: [],
-      http_code: response.status,
-      content_type: contentType,
-      elapsed_ms:
-        Date.now() - started,
-      raw_keys: [],
-      parser: null,
 
-      error: response.ok
-        ? "PelixPlay devolvió una respuesta que no es JSON."
-        : `PelixPlay respondió HTTP ${response.status}.`
+      success:
+        false,
+
+      status:
+        "invalid_json",
+
+      links: [],
+
+      http_code:
+        response.status,
+
+      content_type:
+        contentType,
+
+      elapsed_ms:
+        Date.now() -
+        started,
+
+      raw_keys: [],
+
+      parser:
+        null,
+
+      error:
+        response.ok
+
+          ? "PelixPlay devolvió una respuesta que no es JSON."
+
+          : `PelixPlay respondió HTTP ${response.status}.`
+
     };
   }
 
 
-  if (!response.ok) {
+  if (
+    !response.ok
+  ) {
 
     return {
-      success: false,
-      status: "http_error",
+
+      success:
+        false,
+
+      status:
+        "http_error",
+
       links: [],
-      http_code: response.status,
-      content_type: contentType,
+
+      http_code:
+        response.status,
+
+      content_type:
+        contentType,
+
       elapsed_ms:
-        Date.now() - started,
-      raw_keys: objectKeys(data),
-      parser: null,
+        Date.now() -
+        started,
+
+      raw_keys:
+        objectKeys(data),
+
+      parser:
+        null,
+
       error:
         extractErrorMessage(data)
+
     };
   }
 
@@ -1051,14 +1343,21 @@ async function scrapePelixPlay({
 
   /*
    * ==============================================================
-   * ALL_EMBEDS
+   * ALL EMBEDS
    * ==============================================================
    */
 
   if (
+
     data?.all_embeds &&
-    typeof data.all_embeds === "object" &&
-    !Array.isArray(data.all_embeds)
+
+    typeof data.all_embeds ===
+      "object" &&
+
+    !Array.isArray(
+      data.all_embeds
+    )
+
   ) {
 
     const diagnostics =
@@ -1073,11 +1372,18 @@ async function scrapePelixPlay({
       );
 
 
-    if (links.length > 0) {
+    if (
+      links.length > 0
+    ) {
 
       return {
-        success: true,
-        status: "links_found",
+
+        success:
+          true,
+
+        status:
+          "links_found",
+
         links,
 
         http_code:
@@ -1087,7 +1393,8 @@ async function scrapePelixPlay({
           contentType,
 
         elapsed_ms:
-          Date.now() - started,
+          Date.now() -
+          started,
 
         parser:
           "all_embeds",
@@ -1096,6 +1403,7 @@ async function scrapePelixPlay({
           rawKeys,
 
         ...diagnostics
+
       };
     }
   }
@@ -1108,9 +1416,16 @@ async function scrapePelixPlay({
    */
 
   if (
+
     data?.embeds &&
-    typeof data.embeds === "object" &&
-    !Array.isArray(data.embeds)
+
+    typeof data.embeds ===
+      "object" &&
+
+    !Array.isArray(
+      data.embeds
+    )
+
   ) {
 
     const diagnostics =
@@ -1121,18 +1436,29 @@ async function scrapePelixPlay({
 
     const links =
       extractEmbedsFallback(
+
         data.embeds,
+
         normalizeLanguage(
-          data.language || "latino"
+          data.language ||
+          "latino"
         )
+
       );
 
 
-    if (links.length > 0) {
+    if (
+      links.length > 0
+    ) {
 
       return {
-        success: true,
-        status: "links_found",
+
+        success:
+          true,
+
+        status:
+          "links_found",
+
         links,
 
         http_code:
@@ -1142,7 +1468,8 @@ async function scrapePelixPlay({
           contentType,
 
         elapsed_ms:
-          Date.now() - started,
+          Date.now() -
+          started,
 
         parser:
           "embeds",
@@ -1151,13 +1478,19 @@ async function scrapePelixPlay({
           rawKeys,
 
         ...diagnostics
+
       };
     }
 
 
     return {
-      success: false,
-      status: "no_embeds",
+
+      success:
+        false,
+
+      status:
+        "no_embeds",
+
       links: [],
 
       http_code:
@@ -1167,7 +1500,8 @@ async function scrapePelixPlay({
         contentType,
 
       elapsed_ms:
-        Date.now() - started,
+        Date.now() -
+        started,
 
       parser:
         "embeds",
@@ -1179,17 +1513,25 @@ async function scrapePelixPlay({
 
       error:
         "PelixPlay respondió JSON pero no quedaron URLs válidas."
+
     };
   }
 
 
   /*
-   * Sin embeds
+   * ==============================================================
+   * SIN EMBEDS
+   * ==============================================================
    */
 
   return {
-    success: false,
-    status: "no_embeds",
+
+    success:
+      false,
+
+    status:
+      "no_embeds",
+
     links: [],
 
     http_code:
@@ -1199,24 +1541,38 @@ async function scrapePelixPlay({
       contentType,
 
     elapsed_ms:
-      Date.now() - started,
+      Date.now() -
+      started,
 
-    parser: null,
+    parser:
+      null,
 
     raw_keys:
       rawKeys,
 
     all_embeds_languages: [],
-    all_embeds_urls: 0,
-    all_embeds_valid: 0,
-    all_embeds_discarded: 0,
 
-    embeds_urls: 0,
-    embeds_valid: 0,
-    embeds_discarded: 0,
+    all_embeds_urls:
+      0,
+
+    all_embeds_valid:
+      0,
+
+    all_embeds_discarded:
+      0,
+
+    embeds_urls:
+      0,
+
+    embeds_valid:
+      0,
+
+    embeds_discarded:
+      0,
 
     error:
       "PelixPlay devolvió JSON pero no contiene all_embeds ni embeds."
+
   };
 }
 
@@ -1226,32 +1582,49 @@ async function scrapePelixPlay({
  * ================================================================ */
 
 async function fetchSupabase({
+
   env,
+
   tmdbId,
   type,
+
   season,
   episode
+
 }) {
 
-  const started = Date.now();
+  const started =
+    Date.now();
 
 
-  if (!env.SUPABASE_URL) {
+  if (
+    !env.SUPABASE_URL
+  ) {
 
     return failure(
+
       "not_configured",
+
       "SUPABASE_URL no está configurado.",
+
       started
+
     );
   }
 
 
-  if (!env.SUPABASE_ANON_KEY) {
+  if (
+    !env.SUPABASE_ANON_KEY
+  ) {
 
     return failure(
+
       "not_configured",
+
       "SUPABASE_ANON_KEY no está configurado.",
+
       started
+
     );
   }
 
@@ -1306,30 +1679,44 @@ async function fetchSupabase({
 
   try {
 
-    response = await fetch(
-      endpoint,
-      {
-        method: "GET",
+    response =
+      await fetch(
 
-        headers: {
-          "apikey":
-            env.SUPABASE_ANON_KEY,
+        endpoint,
 
-          "Authorization":
-            `Bearer ${env.SUPABASE_ANON_KEY}`,
+        {
 
-          "Accept":
-            "application/json"
+          method:
+            "GET",
+
+          headers: {
+
+            "apikey":
+              env.SUPABASE_ANON_KEY,
+
+            "Authorization":
+              `Bearer ${env.SUPABASE_ANON_KEY}`,
+
+            "Accept":
+              "application/json"
+
+          }
+
         }
-      }
-    );
+
+      );
 
   } catch (err) {
 
     return failure(
+
       "request_error",
-      err?.message || String(err),
+
+      err?.message ||
+        String(err),
+
       started
+
     );
   }
 
@@ -1351,8 +1738,13 @@ async function fetchSupabase({
   } catch {
 
     return {
-      success: false,
-      status: "invalid_json",
+
+      success:
+        false,
+
+      status:
+        "invalid_json",
+
       links: [],
 
       http_code:
@@ -1362,22 +1754,31 @@ async function fetchSupabase({
         contentType,
 
       elapsed_ms:
-        Date.now() - started,
+        Date.now() -
+        started,
 
       parser:
         "supabase_rest",
 
       error:
         "Supabase devolvió una respuesta no JSON."
+
     };
   }
 
 
-  if (!response.ok) {
+  if (
+    !response.ok
+  ) {
 
     return {
-      success: false,
-      status: "http_error",
+
+      success:
+        false,
+
+      status:
+        "http_error",
+
       links: [],
 
       http_code:
@@ -1387,22 +1788,33 @@ async function fetchSupabase({
         contentType,
 
       elapsed_ms:
-        Date.now() - started,
+        Date.now() -
+        started,
 
       parser:
         "supabase_rest",
 
       error:
-        extractErrorMessage(rows)
+        extractErrorMessage(
+          rows
+        )
+
     };
   }
 
 
-  if (!Array.isArray(rows)) {
+  if (
+    !Array.isArray(rows)
+  ) {
 
     return {
-      success: false,
-      status: "invalid_response",
+
+      success:
+        false,
+
+      status:
+        "invalid_response",
+
       links: [],
 
       http_code:
@@ -1412,13 +1824,15 @@ async function fetchSupabase({
         contentType,
 
       elapsed_ms:
-        Date.now() - started,
+        Date.now() -
+        started,
 
       parser:
         "supabase_rest",
 
       error:
         "Supabase no devolvió un array."
+
     };
   }
 
@@ -1430,7 +1844,9 @@ async function fetchSupabase({
   const links = [];
 
 
-  for (const row of rows) {
+  for (
+    const row of rows
+  ) {
 
     if (
       !row ||
@@ -1459,20 +1875,26 @@ async function fetchSupabase({
 
 
     links.push({
+
       url_embed:
         row.url_embed,
 
       servidor:
         normalizeServerName(
+
           row.servidor ||
           "Desconocido"
+
         ),
 
       idioma:
         normalizeLanguage(
+
           row.idioma ||
           "Desconocido"
+
         )
+
     });
   }
 
@@ -1484,6 +1906,7 @@ async function fetchSupabase({
 
 
   return {
+
     success:
       unique.length > 0,
 
@@ -1502,7 +1925,8 @@ async function fetchSupabase({
       contentType,
 
     elapsed_ms:
-      Date.now() - started,
+      Date.now() -
+      started,
 
     parser:
       "supabase_rest",
@@ -1515,15 +1939,21 @@ async function fetchSupabase({
 
     rows_discarded:
       Math.max(
+
         0,
+
         rowsReceived -
         unique.length
+
       ),
 
     error:
       unique.length > 0
+
         ? null
+
         : "Supabase respondió correctamente pero no hay enlaces válidos."
+
   };
 }
 
@@ -1541,14 +1971,24 @@ function extractAllEmbeds(
 
   for (
     const [language, servers]
-    of Object.entries(allEmbeds)
+    of Object.entries(
+      allEmbeds
+    )
   ) {
 
     if (
+
       !servers ||
-      typeof servers !== "object" ||
-      Array.isArray(servers)
+
+      typeof servers !==
+        "object" ||
+
+      Array.isArray(
+        servers
+      )
+
     ) {
+
       continue;
     }
 
@@ -1560,8 +2000,13 @@ function extractAllEmbeds(
 
 
     for (
-      const [serverName, values]
-      of Object.entries(servers)
+      const [
+        serverName,
+        values
+      ]
+      of Object.entries(
+        servers
+      )
     ) {
 
       if (
@@ -1569,15 +2014,23 @@ function extractAllEmbeds(
           serverName
         )
       ) {
+
         continue;
       }
 
 
       const urls =
-        Array.isArray(values)
+        Array.isArray(
+          values
+        )
+
           ? values
-          : typeof values === "string"
+
+          : typeof values ===
+              "string"
+
             ? [values]
+
             : [];
 
 
@@ -1588,12 +2041,15 @@ function extractAllEmbeds(
         if (
           !isHttpUrl(url)
         ) {
+
           continue;
         }
 
 
         result.push({
-          url_embed: url,
+
+          url_embed:
+            url,
 
           servidor:
             normalizeServerName(
@@ -1601,6 +2057,7 @@ function extractAllEmbeds(
             ),
 
           idioma
+
         });
       }
     }
@@ -1626,8 +2083,13 @@ function extractEmbedsFallback(
 
 
   for (
-    const [serverName, values]
-    of Object.entries(embeds)
+    const [
+      serverName,
+      values
+    ]
+    of Object.entries(
+      embeds
+    )
   ) {
 
     if (
@@ -1635,15 +2097,23 @@ function extractEmbedsFallback(
         serverName
       )
     ) {
+
       continue;
     }
 
 
     const urls =
-      Array.isArray(values)
+      Array.isArray(
+        values
+      )
+
         ? values
-        : typeof values === "string"
+
+        : typeof values ===
+            "string"
+
           ? [values]
+
           : [];
 
 
@@ -1654,12 +2124,15 @@ function extractEmbedsFallback(
       if (
         !isHttpUrl(url)
       ) {
+
         continue;
       }
 
 
       result.push({
-        url_embed: url,
+
+        url_embed:
+          url,
 
         servidor:
           normalizeServerName(
@@ -1667,6 +2140,7 @@ function extractEmbedsFallback(
           ),
 
         idioma
+
       });
     }
   }
@@ -1679,23 +2153,34 @@ function extractEmbedsFallback(
 
 
 /* ================================================================
- * DIAGNOSTICS
+ * DIAGNOSTICS - ALL EMBEDS
  * ================================================================ */
 
 function countAllEmbeds(
   allEmbeds
 ) {
 
-  let urls = 0;
-  let valid = 0;
-  let discarded = 0;
+  let urls =
+    0;
 
-  const languages = [];
+  let valid =
+    0;
+
+  let discarded =
+    0;
+
+  const languages =
+    [];
 
 
   for (
-    const [language, servers]
-    of Object.entries(allEmbeds)
+    const [
+      language,
+      servers
+    ]
+    of Object.entries(
+      allEmbeds
+    )
   ) {
 
     languages.push(
@@ -1704,24 +2189,44 @@ function countAllEmbeds(
 
 
     if (
+
       !servers ||
-      typeof servers !== "object" ||
-      Array.isArray(servers)
+
+      typeof servers !==
+        "object" ||
+
+      Array.isArray(
+        servers
+      )
+
     ) {
+
       continue;
     }
 
 
     for (
-      const [serverName, values]
-      of Object.entries(servers)
+      const [
+        serverName,
+        values
+      ]
+      of Object.entries(
+        servers
+      )
     ) {
 
       const list =
-        Array.isArray(values)
+        Array.isArray(
+          values
+        )
+
           ? values
-          : typeof values === "string"
+
+          : typeof values ===
+              "string"
+
             ? [values]
+
             : [];
 
 
@@ -1733,10 +2238,13 @@ function countAllEmbeds(
 
 
         if (
+
           isHttpUrl(url) &&
+
           !isBlacklisted(
             serverName
           )
+
         ) {
 
           valid++;
@@ -1751,6 +2259,7 @@ function countAllEmbeds(
 
 
   return {
+
     all_embeds_languages:
       languages,
 
@@ -1762,33 +2271,51 @@ function countAllEmbeds(
 
     all_embeds_discarded:
       discarded
+
   };
 }
 
 
 /* ================================================================
- * EMBEDS DIAGNOSTICS
+ * DIAGNOSTICS - EMBEDS
  * ================================================================ */
 
 function countEmbeds(
   embeds
 ) {
 
-  let urls = 0;
-  let valid = 0;
-  let discarded = 0;
+  let urls =
+    0;
+
+  let valid =
+    0;
+
+  let discarded =
+    0;
 
 
   for (
-    const [serverName, values]
-    of Object.entries(embeds)
+    const [
+      serverName,
+      values
+    ]
+    of Object.entries(
+      embeds
+    )
   ) {
 
     const list =
-      Array.isArray(values)
+      Array.isArray(
+        values
+      )
+
         ? values
-        : typeof values === "string"
+
+        : typeof values ===
+            "string"
+
           ? [values]
+
           : [];
 
 
@@ -1800,10 +2327,13 @@ function countEmbeds(
 
 
       if (
+
         isHttpUrl(url) &&
+
         !isBlacklisted(
           serverName
         )
+
       ) {
 
         valid++;
@@ -1817,6 +2347,7 @@ function countEmbeds(
 
 
   return {
+
     embeds_urls:
       urls,
 
@@ -1825,6 +2356,7 @@ function countEmbeds(
 
     embeds_discarded:
       discarded
+
   };
 }
 
@@ -1837,7 +2369,8 @@ function deduplicateLinks(
   links
 ) {
 
-  const map = new Map();
+  const map =
+    new Map();
 
 
   for (
@@ -1847,6 +2380,7 @@ function deduplicateLinks(
     if (
       !isValidLink(link)
     ) {
+
       continue;
     }
 
@@ -1854,11 +2388,8 @@ function deduplicateLinks(
     /*
      * Duplicado =
      *
-     * mismo idioma + mismo servidor
-     *
-     * Así, si Supabase y PelixPlay
-     * tienen Streamwish Latino,
-     * solo queda uno.
+     * mismo idioma +
+     * mismo servidor
      */
 
     const key =
@@ -1891,7 +2422,10 @@ function prioritizeVimeus(
   links
 ) {
 
-  return [...links].sort(
+  return [
+    ...links
+  ].sort(
+
     (a, b) => {
 
       const aVimeus =
@@ -1901,6 +2435,7 @@ function prioritizeVimeus(
           ? 0
           : 1;
 
+
       const bVimeus =
         isVimeus(
           b.servidor
@@ -1908,9 +2443,13 @@ function prioritizeVimeus(
           ? 0
           : 1;
 
-      return aVimeus -
-        bVimeus;
+
+      return (
+        aVimeus -
+        bVimeus
+      );
     }
+
   );
 }
 
@@ -1920,17 +2459,26 @@ function isVimeus(
 ) {
 
   const value =
-    String(server || "")
+    String(
+      server || ""
+    )
       .trim()
       .toLowerCase()
-      .replace(/[\s_-]+/g, "");
+      .replace(
+        /[\s_-]+/g,
+        ""
+      );
 
 
   return [
+
     "vimeus",
     "vimeos",
     "vimeo"
-  ].includes(value);
+
+  ].includes(
+    value
+  );
 }
 
 
@@ -1943,14 +2491,20 @@ function isValidLink(
 ) {
 
   return !!(
+
     link &&
-    typeof link === "object" &&
+
+    typeof link ===
+      "object" &&
+
     isHttpUrl(
       link.url_embed
     ) &&
+
     !isBlacklisted(
       link.servidor
     )
+
   );
 }
 
@@ -1960,8 +2514,14 @@ function isHttpUrl(
 ) {
 
   return (
-    typeof value === "string" &&
-    /^https?:\/\//i.test(value)
+
+    typeof value ===
+      "string" &&
+
+    /^https?:\/\//i.test(
+      value
+    )
+
   );
 }
 
@@ -1975,7 +2535,9 @@ function isBlacklisted(
 ) {
 
   const normalized =
-    String(server || "")
+    String(
+      server || ""
+    )
       .trim()
       .toLowerCase()
       .replace(
@@ -1985,6 +2547,7 @@ function isBlacklisted(
 
 
   return BLACKLIST.some(
+
     blocked => {
 
       const b =
@@ -1997,10 +2560,14 @@ function isBlacklisted(
 
 
       return (
+
         normalized === b ||
+
         normalized.startsWith(b)
+
       );
     }
+
   );
 }
 
@@ -2014,7 +2581,9 @@ function normalizeServerName(
 ) {
 
   const value =
-    String(server || "")
+    String(
+      server || ""
+    )
       .trim()
       .toLowerCase();
 
@@ -2072,12 +2641,18 @@ function normalizeServerName(
 
     vimeo:
       "Vimeus"
+
   };
 
 
   return (
+
     map[base] ||
-    capitalize(base)
+
+    capitalize(
+      base
+    )
+
   );
 }
 
@@ -2091,7 +2666,9 @@ function normalizeLanguage(
 ) {
 
   const value =
-    String(language || "")
+    String(
+      language || ""
+    )
       .trim()
       .toLowerCase();
 
@@ -2136,12 +2713,18 @@ function normalizeLanguage(
 
     sub:
       "Subtitulado"
+
   };
 
 
   return (
+
     map[value] ||
-    capitalize(value)
+
+    capitalize(
+      value
+    )
+
   );
 }
 
@@ -2155,13 +2738,18 @@ function capitalize(
 ) {
 
   if (!value) {
+
     return "Desconocido";
   }
 
 
   return (
-    value.charAt(0).toUpperCase() +
+
+    value.charAt(0)
+      .toUpperCase() +
+
     value.slice(1)
+
   );
 }
 
@@ -2211,7 +2799,9 @@ function buildBetaEndpoint(
   episode
 ) {
 
-  if (type === "movie") {
+  if (
+    type === "movie"
+  ) {
 
     return (
       `/play/movie/${tmdbId}?fallback=beta`
@@ -2222,117 +2812,6 @@ function buildBetaEndpoint(
   return (
     `/play/tv/${tmdbId}/${season}/${episode}?fallback=beta`
   );
-}
-
-
-/* ================================================================
- * SSE
- * ================================================================ */
-
-function createSSE() {
-
-  let controller;
-
-
-  const stream =
-    new ReadableStream({
-
-      start(c) {
-
-        controller = c;
-      },
-
-
-      cancel() {
-
-        controller = null;
-      }
-    });
-
-
-  const writer = {
-
-    write(chunk) {
-
-      if (!controller) {
-        return;
-      }
-
-
-      controller.enqueue(
-        new TextEncoder().encode(
-          chunk
-        )
-      );
-    },
-
-
-    close() {
-
-      if (!controller) {
-        return;
-      }
-
-
-      controller.close();
-
-      controller = null;
-    }
-  };
-
-
-  const headers =
-    new Headers({
-
-      ...CORS,
-
-      "Content-Type":
-        "text/event-stream; charset=UTF-8",
-
-      "Cache-Control":
-        "no-cache, no-store, must-revalidate",
-
-      "X-Accel-Buffering":
-        "no"
-    });
-
-
-  return {
-
-    writer,
-
-    response:
-      new Response(
-        stream,
-        {
-          status: 200,
-          headers
-        }
-      )
-  };
-}
-
-
-/* ================================================================
- * SEND SSE
- * ================================================================ */
-
-async function sendSSE(
-  writer,
-  event,
-  data
-) {
-
-  writer.write(
-    `event: ${event}\n`
-  );
-
-  writer.write(
-    `data: ${JSON.stringify(data)}\n\n`
-  );
-
-
-  await Promise.resolve();
 }
 
 
@@ -2348,16 +2827,19 @@ function failure(
 
   return {
 
-    success: false,
+    success:
+      false,
 
     status,
 
     links: [],
 
     elapsed_ms:
-      Date.now() - started,
+      Date.now() -
+      started,
 
     error
+
   };
 }
 
@@ -2371,7 +2853,8 @@ function extractErrorMessage(
 ) {
 
   if (
-    typeof data === "string"
+    typeof data ===
+      "string"
   ) {
 
     return data.slice(
@@ -2382,15 +2865,24 @@ function extractErrorMessage(
 
 
   if (
+
     data &&
-    typeof data === "object"
+
+    typeof data ===
+      "object"
+
   ) {
 
     return (
+
       data.message ||
+
       data.error ||
+
       data.msg ||
+
       "Respuesta HTTP no válida."
+
     );
   }
 
@@ -2410,14 +2902,24 @@ function objectKeys(
 ) {
 
   return (
+
     value &&
-    typeof value === "object" &&
-    !Array.isArray(value)
+
+    typeof value ===
+      "object" &&
+
+    !Array.isArray(
+      value
+    )
+
   )
 
-    ? Object.keys(value)
+    ? Object.keys(
+        value
+      )
 
     : [];
+
 }
 
 
@@ -2430,17 +2932,21 @@ function isBetaFallback(
 ) {
 
   return [
+
     "beta",
     "1",
     "true",
     "yes",
     "on"
+
   ].includes(
+
     String(
       value || ""
     )
       .trim()
       .toLowerCase()
+
   );
 }
 
@@ -2450,17 +2956,21 @@ function isTrue(
 ) {
 
   return [
+
     "1",
     "true",
     "yes",
     "on",
     "force"
+
   ].includes(
+
     String(
       value || ""
     )
       .trim()
       .toLowerCase()
+
   );
 }
 
@@ -2484,18 +2994,25 @@ function jsonResponse(
 
       "Cache-Control":
         "no-store"
+
     });
 
 
   return new Response(
+
     JSON.stringify(
       data,
       null,
       2
     ),
+
     {
+
       status,
+
       headers
+
     }
+
   );
 }
